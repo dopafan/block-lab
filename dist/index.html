@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#164d42">
+  <meta name="description" content="在6×6棋盘中求固定方向四格积木的最大摆放数量，直观查看最少移除的每一种组合。">
+  <title>积木实验室 · 6×6 最优摆放</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23164d42'/%3E%3Cpath d='M10 10h9v9h-9zm11 0h9v9h-9zM10 21h9v9h-9z' fill='%23e5f1ad'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="积木实验室首页"><span class="brand-mark"><i></i><i></i><i></i></span><span>积木实验室<small>BLOCK LAB</small></span></a>
+    <div class="header-meta"><span class="status-dot"></span>6 × 6 的空间，无限种可能</div>
+    <button id="help-button" class="icon-button" aria-label="查看使用说明" title="使用说明">?</button>
+  </header>
+  <main class="page">
+    <section class="intro"><div><div class="eyebrow">A LITTLE SPACE. A CLEVER FIT.</div><h1>每一块，都有它的位置<span>。</span></h1><p>选好你的积木，看看这 36 格能装下多少。</p></div><div class="rules"><span><b>4</b> 格一块</span><span>只平移</span><span>不旋转 · 不重叠</span></div></section>
+    <div class="workspace">
+      <aside id="inventory-panel" class="inventory panel">
+        <div class="panel-heading"><div><span class="section-number">01</span><h2>我的积木</h2></div><span id="inventory-count" class="count-badge">9 块</span></div>
+        <p class="panel-subtitle">按类型分区，同类方向并排选。小图就是固定方向，不用的数量设为 0。</p>
+        <div id="inventory-list" class="inventory-list"></div>
+        <div class="inventory-controls"><div class="inventory-capacity">
+        <div class="inventory-summary"><span>合计占用 <strong id="area-count">36</strong> 格</span><span>棋盘容量 <strong>36</strong> 格</span></div>
+        <div class="area-meter" aria-hidden="true"><span id="area-meter-fill"></span></div>
+        <p id="area-note" class="area-note">面积放得下，不一定形状也刚好。</p>
+        </div><div class="inventory-actions">
+        <button id="solve-button" class="primary-button"><span class="spark-icon">✧</span><span id="solve-label">寻找最优摆法</span><span class="button-arrow">→</span></button>
+        <div class="preset-actions"><button id="reset-example">载入你的示例</button><span>·</span><button id="clear-all">全部清空</button></div>
+        <p class="local-note"><span class="tiny-dot"></span>所有计算在你的浏览器中完成</p>
+        </div></div>
+      </aside>
+      <section id="result-panel" class="result-panel panel" aria-label="摆放结果">
+        <div class="panel-heading"><div><span class="section-number">02</span><h2>摆放实验台</h2></div><div class="result-toolbar"><a class="back-to-inventory" href="#inventory-panel">↑ 调整积木</a><span id="proof-badge" class="proof-badge">准备就绪</span><button id="export-button" class="icon-button export-button" aria-label="下载当前摆放图" title="下载当前摆放图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v12m-4-4 4 4 4-4M5 15v5h14v-5"/></svg></button></div></div>
+        <div id="result-stale" class="stale-banner" hidden>积木已调整，点击「寻找最优摆法」更新结果。</div>
+        <div class="result-content">
+          <div class="board-section"><div class="board-topline"><span><i class="live-dot"></i><span id="board-caption">最优摆放方案</span></span><span class="dimension">6 × 6</span></div><div id="board" class="board-wrap" role="img" aria-label="6乘6积木棋盘"></div><div class="board-footnote"><span>相同字母是同一块积木</span><span id="empty-count">4 格留白</span></div></div>
+          <div class="result-side"><div class="result-eyebrow">THIS SPACE CAN HOLD</div><div class="big-result"><strong id="placed-count">—</strong><span>/ <span id="total-count">9</span> 块</span></div><h3 id="result-title">准备好，开始试试</h3><p id="result-description" class="result-description">每一块保持原来的方向，让算法找到合适的位置。</p><div class="coverage-label"><span>空间利用率</span><strong id="coverage-value">—</strong></div><div class="coverage-meter"><span id="coverage-fill"></span></div><div id="piece-legend" class="piece-legend"></div><div id="solver-detail" class="solver-detail">固定方向 · 精确搜索</div></div>
+        </div>
+        <div id="result-message" class="result-message" role="status" aria-live="polite"><span class="message-icon">↗</span><span>从包含正方形的 9 块积木示例开始。</span></div>
+      </section>
+    </div>
+    <section id="alternatives-section" class="alternatives-section" hidden><div class="alternatives-heading"><div><div class="eyebrow">MAKE A LITTLE ROOM</div><h2 id="alternatives-title">少一块，也有新解法。</h2><p id="alternatives-description"></p></div><span id="alternatives-count" class="count-badge"></span></div><div id="alternatives-grid" class="alternatives-grid"></div><button id="more-alternatives" class="secondary-button" hidden>显示更多方案</button><p id="alternatives-limit" class="alternatives-limit" hidden></p></section>
+    <footer class="page-footer"><span>把复杂的摆法，变成看得见的答案。</span><span>6 × 6 · TETROMINO EXPLORER</span></footer>
+  </main>
+  <dialog id="help-dialog"><div class="dialog-heading"><h2>给积木找到位置</h2><button class="icon-button" data-close="help-dialog" aria-label="关闭">×</button></div><ol class="help-steps"><li>积木按直条、Z 型、L 型、T 型、正方形分区，同类的不同方向并排显示。全部 19 种方向都已列出，直接调整数量，0 表示不用。小图代表唯一允许的方向。正反 Z、左右 L 等名称均以小图为准。</li><li>点击「寻找最优摆法」。每块积木只能平移，不能旋转、翻转、重叠或拆开。</li><li>如果全部放不下，查看最多能放几块，以及最少要移除哪些块。每种移除组合展示一个摆法，点击小棋盘可放大查看。</li></ol><p class="help-note">“已证明最优”表示完整搜索已排除更多块的可能性。若搜索超时，页面只报告当前可行摆法，不会将它称为最优。大量移除组合可能只展示部分，页面会明确说明。</p><button class="primary-button" data-close="help-dialog">明白了，开始摆</button></dialog>
+  <noscript><p class="noscript">请启用 JavaScript 后使用积木求解器。</p></noscript>
+</body>
+</html>

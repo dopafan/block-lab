@@ -1,327 +1,518 @@
 import { SHAPES } from './solver.js';
 
 const $ = (selector) => document.querySelector(selector);
-const LEGACY_DEFAULT = { i_h: 2, z_h: 1, s_h: 1, z_v: 1, l_left: 1, t_right: 1, l_right: 1 };
-const DEFAULT = { ...LEGACY_DEFAULT, o_square: 1 };
-const SHAPE_MAP = Object.fromEntries(SHAPES.map((shape) => [shape.id, shape]));
-const SHAPE_GROUPS = [
-  { family: 'I', name: '直条' },
-  { family: 'O', name: '正方形' },
-  { family: 'Z', name: 'Z 型' },
-  { family: 'T', name: 'T 型' },
-  { family: 'L', name: 'L 型' },
+const FAMILIES = [
+  { id: 'I', name: '直条' },
+  { id: 'O', name: '正方形' },
+  { id: 'T', name: 'T 型' },
+  { id: 'Z', name: 'Z 型' },
+  { id: 'L', name: 'L 型' },
 ];
-const BASE_COLORS = { i_h: '#d9b94b', i_v: '#b6a146', z_h: '#df8a78', s_h: '#a39ac5', z_v: '#8daec6', s_v: '#7794c3', l_left: '#8ab99d', l_right: '#d4a77d', l_left_up: '#9bc49a', l_right_up: '#c4a4bf', l_h_down: '#92b6aa', l_h_right_down: '#d1b289', l_h_up: '#9fb989', l_h_right_up: '#c398b4', t_down: '#9db4b8', t_up: '#80aaa7', t_left: '#97b4c8', t_right: '#a6bc81', o_square: '#c99a63' };
+const FAMILY_COLORS = { I: '#22b3a4', O: '#f4b740', T: '#9b6cf0', Z: '#f0695a', L: '#3f8cf0' };
+const FAMILY_INK = { I: '#ffffff', O: '#4a3200', T: '#ffffff', Z: '#ffffff', L: '#ffffff' };
+const SHAPE_MAP = Object.fromEntries(SHAPES.map((shape) => [shape.id, shape]));
+const SHAPE_ORDER = Object.fromEntries(SHAPES.map((shape, index) => [shape.id, index]));
+const SHAPE_BY_KEY = Object.fromEntries(SHAPES.map((shape) => [cellsKey(shape.cells), shape]));
+const DEFAULT = { i_h: 2, z_h: 1, s_h: 1, z_v: 1, l_left: 1, t_right: 1, l_right: 1, o_square: 1 };
+const STORE_KEY = 'block-lab-inventory-v1';
+const MAX_EACH = 9;
+const PAGE = 6;
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
 let counts = { ...DEFAULT };
 let result = null;
-let solvedCounts = {};
-let resultCounts = {};
-let activeScenario = -1;
-let shownAlternatives = 8;
+let scenarios = [];
+let scenarioKind = null;
+let active = 0;
+let shown = PAGE;
 let worker = null;
-let searchTimer = null;
 let runId = 0;
-let busy = false;
+let solveTimer = null;
+let busyTimer = null;
+let busyTick = null;
 
-function mix(hex, amount) {
-  const n = parseInt(hex.slice(1), 16);
-  const values = [n >> 16, (n >> 8) & 255, n & 255].map((v) => Math.round(v * (1 - amount) + 255 * amount));
-  return `#${values.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+/* ---------- helpers ---------- */
+
+function cellsKey(cells) {
+  const minX = Math.min(...cells.map(([x]) => x));
+  const minY = Math.min(...cells.map(([, y]) => y));
+  return cells.map(([x, y]) => `${x - minX},${y - minY}`).sort().join(' ');
 }
 
-function colors(id) {
-  const base = BASE_COLORS[id] || '#98b19a';
-  return { fill: mix(base, 0.41), stroke: mix(base, 0.22), ink: '#485747' };
-}
-
-function shapeSvg(shape, size = 8) {
-  const width = Math.max(...shape.cells.map(([x]) => x)) + 1;
-  const height = Math.max(...shape.cells.map(([, y]) => y)) + 1;
-  const c = colors(shape.id);
-  return `<svg viewBox="0 0 ${width * size} ${height * size}" width="${width * size}" height="${height * size}" aria-hidden="true">${shape.cells.map(([x, y]) => `<rect x="${x * size + 0.6}" y="${y * size + 0.6}" width="${size - 1.2}" height="${size - 1.2}" rx="1.5" fill="${c.fill}" stroke="${c.stroke}" stroke-width=".5"/>`).join('')}</svg>`;
-}
-
-function inventoryTotal(source = counts) {
+function total(source = counts) {
   return Object.values(source).reduce((a, b) => a + b, 0);
 }
 
+function piecesText(map) {
+  return Object.entries(map).map(([id, n]) => `${SHAPE_MAP[id].name} × ${n}`).join('、');
+}
+
+/** Per-cell flags telling which sides are open, so one piece reads as one solid shape. */
+function edgeStyle(cells, x, y) {
+  const has = (cx, cy) => cells.some(([px, py]) => px === cx && py === cy);
+  return `--t:${has(x, y - 1) ? 0 : 1};--r:${has(x + 1, y) ? 0 : 1};--b:${has(x, y + 1) ? 0 : 1};--l:${has(x - 1, y) ? 0 : 1}`;
+}
+
+/** Every thumbnail uses the same cell size, whatever the shape's bounding box. */
+function thumb(shape, extraClass = '') {
+  const width = Math.max(...shape.cells.map(([x]) => x)) + 1;
+  const height = Math.max(...shape.cells.map(([, y]) => y)) + 1;
+  const tiles = shape.cells.map(([x, y]) => `<i class="tile" style="grid-column:${x + 1};grid-row:${y + 1};${edgeStyle(shape.cells, x, y)}"></i>`).join('');
+  return `<span class="thumb ${extraClass}" data-family="${shape.family}" style="--w:${width};--h:${height}" aria-hidden="true">${tiles}</span>`;
+}
+
+function decorate(placements) {
+  const order = (a, b) => SHAPE_ORDER[a.shapeId] - SHAPE_ORDER[b.shapeId] || a.y - b.y || a.x - b.x;
+  const own = placements.filter((piece) => !piece.added).sort(order)
+    .map((piece, index) => ({ ...piece, key: `p${index}`, label: String.fromCharCode(65 + index) }));
+  const added = placements.filter((piece) => piece.added).sort(order)
+    .map((piece, index) => ({ ...piece, key: `a${index}`, label: '+' }));
+  return [...own, ...added];
+}
+
+function boardMarkup(placements, labels = true) {
+  let html = '';
+  for (let y = 0; y < 6; y += 1) {
+    for (let x = 0; x < 6; x += 1) html += `<span class="slot" style="grid-column:${x + 1};grid-row:${y + 1}"></span>`;
+  }
+  decorate(placements).forEach((piece, index) => {
+    const family = SHAPE_MAP[piece.shapeId].family;
+    const first = piece.cells.reduce((a, b) => (b[1] * 6 + b[0] < a[1] * 6 + a[0] ? b : a));
+    for (const [x, y] of piece.cells) {
+      const label = labels && first[0] === x && first[1] === y ? piece.label : '';
+      html += `<i class="tile${piece.added ? ' ghost' : ''}" data-family="${family}" data-piece="${piece.key}" style="grid-column:${x + 1};grid-row:${y + 1};${edgeStyle(piece.cells, x, y)};--i:${index}">${label}</i>`;
+    }
+  });
+  return html;
+}
+
+/* ---------- inventory ---------- */
+
 function saveInventory() {
-  try { localStorage.setItem('block-lab-inventory-v1', JSON.stringify({ counts })); } catch { /* Storage may be unavailable in private contexts. */ }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ counts })); } catch { /* Storage may be unavailable. */ }
 }
 
 function restoreInventory() {
   try {
-    const stored = JSON.parse(localStorage.getItem('block-lab-inventory-v1'));
-    if (!stored || !stored.counts || typeof stored.counts !== 'object' || Array.isArray(stored.counts)) return;
+    const stored = JSON.parse(localStorage.getItem(STORE_KEY));
+    if (!stored || typeof stored.counts !== 'object' || stored.counts === null || Array.isArray(stored.counts)) return;
     const clean = {};
     for (const shape of SHAPES) {
       const value = stored.counts[shape.id];
-      if (Number.isInteger(value) && value >= 0 && value <= 99) clean[shape.id] = value;
-    }
-    // Update only the old example; preserve every custom saved inventory.
-    if (!Object.hasOwn(stored.counts, 'o_square')
-      && SHAPES.every((shape) => (clean[shape.id] || 0) === (LEGACY_DEFAULT[shape.id] || 0))) {
-      clean.o_square = 1;
+      if (Number.isInteger(value) && value > 0) clean[shape.id] = Math.min(MAX_EACH, value);
     }
     counts = clean;
-  } catch { /* Fall back to the requested example. */ }
+  } catch { /* Keep the example. */ }
 }
 
 function renderInventory() {
-  $('#inventory-list').innerHTML = SHAPE_GROUPS.map(({ family, name }) => {
-    const variants = SHAPES.filter((shape) => shape.family === family);
-    return `<section class="shape-group" data-family="${family}" aria-labelledby="shape-group-${family}-title"><div class="shape-group-heading"><h3 id="shape-group-${family}-title"><span class="family-name">${name}</span><span class="variant-count">${variants.length} 种方向</span></h3><span class="family-count" data-family-count="${family}"></span></div><div class="orientation-grid">${variants.map((shape) => {
-      const id = shape.id;
-      const n = counts[id] || 0;
-      return `<div class="inventory-row orientation-card ${n > 0 ? 'is-selected' : ''}" data-shape="${id}"><div class="shape-thumbnail">${shapeSvg(shape, 14)}</div><div class="shape-label"><strong>${shape.name}</strong></div><div class="stepper"><button data-adjust="-1" data-id="${id}" aria-label="减少${shape.name}" ${n === 0 ? 'disabled' : ''}>−</button><input type="number" min="0" max="99" step="1" inputmode="numeric" value="${n}" data-count="${id}" aria-label="${shape.name}数量"><button data-adjust="1" data-id="${id}" aria-label="增加${shape.name}" ${n >= 99 ? 'disabled' : ''}>+</button></div></div>`;
-    }).join('')}</div></section>`;
+  $('#inventory').innerHTML = FAMILIES.map(({ id, name }) => {
+    const variants = SHAPES.filter((shape) => shape.family === id);
+    return `<section class="family" data-family="${id}"><div class="family-head"><h2><span class="family-dot"></span>${name}</h2><span class="family-count" data-family-count="${id}"></span></div><div class="cards">${variants.map((shape) => `<div class="card" data-shape="${shape.id}"><button class="card-main" type="button" data-add="${shape.id}" aria-label="加一块${shape.name}"><span class="thumb-box">${thumb(shape)}</span><span class="card-name">${shape.name}</span></button><div class="stepper"><button type="button" data-step="-1" data-id="${shape.id}" aria-label="减少${shape.name}">−</button><span class="count" data-count="${shape.id}" aria-label="${shape.name}数量">0</span><button type="button" data-step="1" data-id="${shape.id}" aria-label="增加${shape.name}">+</button></div></div>`).join('')}</div></section>`;
   }).join('');
-  renderInventorySummary();
+  updateInventory();
 }
 
-function renderInventorySummary() {
+function updateInventory() {
+  document.querySelectorAll('.card').forEach((card) => {
+    const n = counts[card.dataset.shape] || 0;
+    card.classList.toggle('on', n > 0);
+    const count = card.querySelector('.count');
+    if (count.textContent !== String(n)) {
+      count.textContent = n;
+      count.classList.remove('bump');
+      void count.offsetWidth;
+      count.classList.add('bump');
+    }
+    card.querySelector('[data-step="-1"]').disabled = n === 0;
+    card.querySelector('[data-step="1"]').disabled = n >= MAX_EACH;
+  });
   document.querySelectorAll('[data-family-count]').forEach((badge) => {
     const selected = SHAPES.filter((shape) => shape.family === badge.dataset.familyCount)
       .reduce((sum, shape) => sum + (counts[shape.id] || 0), 0);
-    badge.textContent = `已选 ${selected} 块`;
-    badge.classList.toggle('has-pieces', selected > 0);
+    badge.textContent = selected > 0 ? `${selected} 块` : '';
   });
-  document.querySelectorAll('.orientation-card').forEach((card) => {
-    const n = counts[card.dataset.shape] || 0;
-    card.classList.toggle('is-selected', n > 0);
-    const input = card.querySelector('[data-count]');
-    if (document.activeElement !== input) input.value = n;
-    card.querySelector('[data-adjust="-1"]').disabled = n === 0;
-    card.querySelector('[data-adjust="1"]').disabled = n >= 99;
-  });
-  const total = inventoryTotal();
-  $('#inventory-count').textContent = `${total} 块`;
-  $('#area-count').textContent = total * 4;
-  $('#area-meter-fill').style.width = `${Math.min(100, total * 4 / 36 * 100)}%`;
-  $('#area-meter-fill').style.background = total > 9 ? '#d7aa78' : '';
-  $('#area-note').textContent = total > 9 ? `仅按面积就至少需要移除 ${total - 9} 块，实际还要看形状。` : '面积放得下，不一定形状也刚好。';
-  $('#area-note').classList.toggle('over', total > 9);
+  const n = total();
+  $('#total-count').textContent = n;
+  $('#area-count').textContent = n * 4;
+  $('#meter-fill').style.width = `${Math.min(100, n * 4 / 36 * 100)}%`;
+  $('.capacity').classList.toggle('over', n > 9);
+  $('#capacity-note').textContent = n > 9 ? `超出棋盘面积，至少要拿掉 ${n - 9} 块。`
+    : n === 9 ? '面积刚好 36 格，能不能铺满要看形状。'
+      : n === 0 ? '还没有选积木。' : `还空 ${36 - n * 4} 格，最多能再加 ${9 - n} 块。`;
 }
 
-function inventoryDirty() {
-  return SHAPES.some((shape) => (counts[shape.id] || 0) !== (resultCounts[shape.id] || 0));
+function setCount(id, value) {
+  const next = Math.max(0, Math.min(MAX_EACH, value));
+  if ((counts[id] || 0) === next) return;
+  if (next === 0) delete counts[id]; else counts[id] = next;
+  inventoryChanged();
 }
 
-function inventoryChanged(renderRows = true) {
-  if (busy) stopSearch(true);
+function inventoryChanged() {
   saveInventory();
-  if (renderRows) renderInventory();
-  else renderInventorySummary();
-  $('#result-stale').hidden = !result || !inventoryDirty();
-  if (result && inventoryDirty()) {
-    $('#proof-badge').textContent = '结果待更新';
-    $('#proof-badge').className = 'proof-badge pending';
-  }
-  $('#solve-label').textContent = '寻找最优摆法';
+  updateInventory();
+  clearTimeout(solveTimer);
+  solveTimer = setTimeout(() => solve(), 160);
 }
 
-function decoratedPlacements(placements) {
-  return [...placements].sort((a, b) => SHAPES.findIndex((shape) => shape.id === a.shapeId) - SHAPES.findIndex((shape) => shape.id === b.shapeId) || a.y - b.y || a.x - b.x).map((placement, index) => ({ ...placement, label: String.fromCharCode(65 + index), color: colors(placement.shapeId) }));
+function flashCard(id) {
+  const card = document.querySelector(`.card[data-shape="${id}"]`);
+  if (!card) return;
+  card.classList.remove('flash');
+  void card.offsetWidth;
+  card.classList.add('flash');
 }
 
-function boardMarkup(placements, withAxes = true) {
-  const decorated = decoratedPlacements(placements);
-  const occupied = new Map();
-  decorated.forEach((piece) => piece.cells.forEach(([x, y]) => occupied.set(y * 6 + x, piece)));
-  let cells = '';
-  for (let y = 0; y < 6; y += 1) {
-    for (let x = 0; x < 6; x += 1) {
-      const piece = occupied.get(y * 6 + x);
-      if (!piece) { cells += `<div class="board-cell empty" title="第${y + 1}行，第${x + 1}列：空格"></div>`; continue; }
-      const label = piece.label;
-      cells += `<div class="board-cell filled" data-piece="${piece.label}" style="--tile:${piece.color.fill};--tile-stroke:${piece.color.stroke};--tile-ink:${piece.color.ink}" title="${piece.label} · ${SHAPE_MAP[piece.shapeId].name} · 第${y + 1}行，第${x + 1}列">${label}</div>`;
-    }
-  }
-  return `${withAxes ? `<div class="axis-x" aria-hidden="true">${[1, 2, 3, 4, 5, 6].map((n) => `<span>${n}</span>`).join('')}</div><div class="axis-y" aria-hidden="true">${[1, 2, 3, 4, 5, 6].map((n) => `<span>${n}</span>`).join('')}</div>` : ''}<div class="board-cells" aria-hidden="true">${cells}</div>`;
+/* ---------- hand drawing ---------- */
+
+const drawn = new Set();
+let drawMode = null;
+
+function drawnShape() {
+  if (drawn.size !== 4) return null;
+  return SHAPE_BY_KEY[cellsKey([...drawn].map((index) => [index % 4, Math.floor(index / 4)]))] || null;
 }
 
-function currentPlacements() {
-  return activeScenario >= 0 ? result.alternatives[activeScenario].placements : result?.placements || [];
+function renderDraw() {
+  const shape = drawnShape();
+  const pad = $('#draw-pad');
+  pad.dataset.family = shape ? shape.family : '';
+  pad.querySelectorAll('[data-draw]').forEach((cell) => {
+    const on = drawn.has(Number(cell.dataset.draw));
+    cell.classList.toggle('on', on);
+    cell.setAttribute('aria-pressed', on);
+  });
+  $('#draw-add').disabled = !shape;
+  $('#draw-clear').disabled = drawn.size === 0;
+  $('#draw-hint').textContent = drawn.size === 0 ? '按住拖动，画出 4 个相连的格子。'
+    : drawn.size < 4 ? `再画 ${4 - drawn.size} 格。`
+      : shape ? `识别为「${shape.name}」。` : '4 个格子要边贴边连在一起。';
+  $('#draw-hint').classList.toggle('ok', Boolean(shape));
+  $('#draw-hint').classList.toggle('bad', drawn.size === 4 && !shape);
 }
 
-function displayBoard() {
-  const placements = currentPlacements();
-  $('#board').innerHTML = boardMarkup(placements);
-  $('#board').setAttribute('aria-label', `6乘6棋盘，摆放${placements.length}块，留空${36 - placements.length * 4}格。${decoratedPlacements(placements).map((p) => `${p.label}是${SHAPE_MAP[p.shapeId].name}`).join('，')}`);
-  $('#empty-count').textContent = `${36 - placements.length * 4} 格留白`;
-  $('#board-caption').textContent = activeScenario >= 0 ? `移除方案 ${String(activeScenario + 1).padStart(2, '0')} 的摆法` : result?.complete ? '最优摆放方案' : result ? '当前找到的摆法' : '等待放入积木';
-  $('#piece-legend').innerHTML = decoratedPlacements(placements).map((piece) => `<span class="legend-item" data-highlight="${piece.label}"><i class="legend-swatch" style="--tile:${piece.color.fill};--tile-ink:${piece.color.ink}">${piece.label}</i>${SHAPE_MAP[piece.shapeId].name}</span>`).join('');
+function paint(index) {
+  if (drawMode === 'erase') drawn.delete(index);
+  else if (drawn.size < 4) drawn.add(index);
+  renderDraw();
 }
 
-function removedText(removed) {
-  return Object.entries(removed).map(([id, count]) => `${SHAPE_MAP[id].name} × ${count}`).join('、');
+function setupDraw() {
+  const pad = $('#draw-pad');
+  pad.innerHTML = Array.from({ length: 16 }, (_, index) => `<button type="button" class="draw-cell" data-draw="${index}" aria-pressed="false" aria-label="第 ${Math.floor(index / 4) + 1} 行第 ${index % 4 + 1} 列"></button>`).join('');
+  pad.addEventListener('pointerdown', (event) => {
+    const cell = event.target.closest('[data-draw]');
+    if (!cell) return;
+    event.preventDefault();
+    const index = Number(cell.dataset.draw);
+    drawMode = drawn.has(index) ? 'erase' : 'paint';
+    try { pad.setPointerCapture(event.pointerId); } catch { /* Not critical. */ }
+    paint(index);
+  });
+  pad.addEventListener('pointermove', (event) => {
+    if (!drawMode) return;
+    const cell = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('[data-draw]');
+    if (!cell) return;
+    const index = Number(cell.dataset.draw);
+    if (drawMode === 'paint' ? !drawn.has(index) : drawn.has(index)) paint(index);
+  });
+  const end = () => { drawMode = null; };
+  pad.addEventListener('pointerup', end);
+  pad.addEventListener('pointercancel', end);
+  // Keyboard activation arrives as a click with no pointer detail.
+  pad.addEventListener('click', (event) => {
+    const cell = event.target.closest('[data-draw]');
+    if (!cell || event.detail !== 0) return;
+    const index = Number(cell.dataset.draw);
+    drawMode = drawn.has(index) ? 'erase' : 'paint';
+    paint(index);
+    drawMode = null;
+  });
+  $('#draw-clear').addEventListener('click', () => { drawn.clear(); renderDraw(); });
+  $('#draw-add').addEventListener('click', () => {
+    const shape = drawnShape();
+    if (!shape) return;
+    drawn.clear();
+    renderDraw();
+    $('#draw-hint').textContent = `已加入一块「${shape.name}」。`;
+    $('#draw-hint').classList.add('ok');
+    setCount(shape.id, (counts[shape.id] || 0) + 1);
+    flashCard(shape.id);
+  });
+  renderDraw();
 }
 
-function renderAlternatives() {
-  const show = result?.complete && result.maxPlaced < result.total;
-  $('#alternatives-section').hidden = !show;
-  if (!show) return;
-  const min = result.minRemoved;
-  $('#alternatives-title').textContent = min === 1 ? '少一块，也有新解法。' : `腾出 ${min} 块的位置，剩下的就能放好。`;
-  $('#alternatives-description').textContent = min === 1 ? '以下每一种减法都能放下剩余积木，点击小棋盘查看大图。相同形状不区分具体哪一块。' : `已证明只减 ${min - 1} 块仍放不下。以下是最少移除组合，每种组合展示一个摆法。`;
-  $('#alternatives-count').textContent = `${result.alternativesComplete ? '共' : '已找到'} ${result.alternatives.length} 种减法`;
-  $('#alternatives-grid').innerHTML = result.alternatives.slice(0, shownAlternatives).map((alternative, index) => `<button class="alternative-card ${activeScenario === index ? 'selected' : ''}" data-scenario="${index}" aria-label="查看方案${index + 1}，移除${removedText(alternative.removed)}" aria-pressed="${activeScenario === index}"><div class="alternative-top"><span>方案 ${String(index + 1).padStart(2, '0')}</span><span class="selected-label">正在查看 ↗</span></div><div class="alternative-mini">${boardMarkup(alternative.placements, false)}</div><div class="alternative-removed">减去 ${Object.entries(alternative.removed).map(([id, n]) => `<span class="removed-shape">${shapeSvg(SHAPE_MAP[id], 6)}${SHAPE_MAP[id].name} × ${n}</span>`).join('')}</div><p class="alternative-note">剩余 ${result.maxPlaced} 块全部放下 · 留空 ${36 - result.maxPlaced * 4} 格</p></button>`).join('');
-  $('#more-alternatives').hidden = shownAlternatives >= result.alternatives.length;
-  $('#more-alternatives').textContent = `显示更多方案（还有 ${Math.max(0, result.alternatives.length - shownAlternatives)} 种）`;
-  $('#alternatives-limit').hidden = result.alternativesComplete;
-  $('#alternatives-limit').textContent = '最大摆放数量已经证明。移除组合较多或枚举达到时间上限，目前只展示已找到的组合，尚未列全。';
-}
+/* ---------- solving ---------- */
 
-function renderResult() {
-  const { maxPlaced, total, complete, elapsedMs, nodes } = result;
-  const allFit = maxPlaced === total;
-  $('#placed-count').textContent = maxPlaced;
-  $('#total-count').textContent = total;
-  $('#coverage-value').textContent = `${(maxPlaced * 4 / 36 * 100).toFixed(1).replace('.0', '')}%`;
-  $('#coverage-fill').style.width = `${maxPlaced * 4 / 36 * 100}%`;
-  $('#result-title').textContent = total === 0 ? '空棋盘，等你来搭' : !complete ? '已找到一个可行摆法' : allFit ? '刚刚好，全都放下了' : `最多放下 ${maxPlaced} 块积木`;
-  $('#result-description').textContent = total === 0 ? '设置积木数量，再来找找它们的位置。' : !complete ? `当前可放 ${maxPlaced} 块，搜索达到时间上限，尚不能确定最大值。` : allFit ? `${total} 块积木保持固定方向，全部进入棋盘，还留有 ${36 - maxPlaced * 4} 格空间。` : `全部 ${total} 块无法同时放下，最少需要移除 ${result.minRemoved} 块。下方可以查看具体减法。`;
-  $('#proof-badge').textContent = complete ? total === 0 ? '等待选择' : '✓ 已证明最优' : '尚未证明最优';
-  $('#proof-badge').className = `proof-badge ${complete ? 'verified' : 'pending'}`;
-  $('#solver-detail').textContent = `${complete ? '精确搜索' : '搜索未完成'} · ${nodes.toLocaleString()} 个状态 · ${elapsedMs < 1000 ? `${elapsedMs} ms` : `${(elapsedMs / 1000).toFixed(2)} s`}`;
-  const message = total === 0 ? '在左侧设置数量后，点击寻找最优摆法。' : !complete ? `搜索达到时间上限。目前至少能放 ${maxPlaced} 块；再次求解将增加搜索时间。` : allFit ? `所有积木都找到了位置。${total <= 9 ? '只平移，不旋转，也没有重叠。' : ''}` : `已经穷尽更多块数的可能性，${maxPlaced} 块就是上限。${result.minRemoved === 1 ? '往下看看，拿掉哪一块就能全部放下。' : `少于 ${result.minRemoved} 块的移除方案都无法放下剩余积木。`}`;
-  $('#result-message').classList.toggle('warning', !complete || !allFit);
-  $('#result-message').innerHTML = `<span class="message-icon">${complete && allFit ? '✓' : '↗'}</span><span>${message}</span>`;
-  $('#export-button').disabled = total === 0;
-  displayBoard();
-  renderAlternatives();
-}
-
-function stopSearch(cancelled = false) {
+function stopWorker() {
   runId += 1;
   worker?.terminate();
   worker = null;
-  clearInterval(searchTimer);
-  busy = false;
-  $('.result-panel').classList.remove('searching');
-  $('#solve-label').textContent = '寻找最优摆法';
-  $('#proof-badge').classList.remove('busy');
-  if (cancelled) {
-    if (result) renderResult();
-    $('#result-stale').hidden = !result || !inventoryDirty();
-    $('#proof-badge').textContent = result && inventoryDirty() ? '结果待更新' : '搜索已取消';
-    $('#proof-badge').className = 'proof-badge pending';
-    $('#result-message').classList.add('warning');
-    $('#result-message').textContent = result ? '本次搜索已取消，当前显示上次的摆法。点击「寻找最优摆法」可以重新计算。' : '本次搜索已取消，点击「寻找最优摆法」可以重新计算。';
-  }
+  clearTimeout(busyTimer);
+  clearInterval(busyTick);
+  $('#stage').classList.remove('busy');
 }
 
-function solve(revealResult = false) {
-  if (busy) { stopSearch(true); return; }
-  const previousIncomplete = result && !result.complete && JSON.stringify(solvedCounts) === JSON.stringify(counts);
-  solvedCounts = { ...counts };
-  const timeLimitMs = previousIncomplete ? 60000 : 15000;
-  busy = true;
-  const thisRun = ++runId;
+function solve(deep = false) {
+  stopWorker();
+  const run = runId;
   const started = performance.now();
-  $('#result-stale').hidden = true;
-  $('#solve-label').textContent = '正在求解 · 点击取消';
-  $('#proof-badge').textContent = '正在搜索…';
-  $('#proof-badge').className = 'proof-badge busy';
-  $('.result-panel').classList.add('searching');
-  $('#result-message').classList.remove('warning');
-  $('#result-message').innerHTML = '<span class="message-icon">✧</span><span>正在寻找摆法，并检查是否还能放入更多积木…</span>';
-  searchTimer = setInterval(() => {
-    $('#proof-badge').textContent = `搜索中 · ${Math.floor((performance.now() - started) / 1000)} s`;
-  }, 500);
+  busyTimer = setTimeout(() => {
+    $('#stage').classList.add('busy');
+    const chip = $('#status-chip');
+    chip.className = 'chip-status working';
+    chip.textContent = '搜索中';
+    busyTick = setInterval(() => { chip.textContent = `搜索中 · ${Math.floor((performance.now() - started) / 1000)} 秒`; }, 500);
+  }, 220);
   try {
     worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
     worker.onmessage = ({ data }) => {
-      if (thisRun !== runId) return;
-      if (data.error) { handleError(data.error); return; }
-      const next = data.result;
-      stopSearch();
-      result = next;
-      resultCounts = { ...solvedCounts };
-      activeScenario = result.complete && result.alternatives.length ? 0 : -1;
-      shownAlternatives = 8;
+      if (run !== runId) return;
+      stopWorker();
+      if (data.error) { showError(data.error); return; }
+      result = data.result;
+      buildScenarios();
       renderResult();
-      if (revealResult) {
-        $('#result-panel').scrollIntoView({
-          behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-          block: 'start',
-        });
-      }
     };
-    worker.onerror = () => handleError('求解器加载失败，请刷新页面后重试。');
-    worker.postMessage({ counts: solvedCounts, options: { timeLimitMs, maxAlternatives: 60 } });
-  } catch (error) { handleError(error.message); }
+    worker.onerror = () => {
+      if (run !== runId) return;
+      stopWorker();
+      showError('求解器加载失败，请刷新页面后重试。');
+    };
+    worker.postMessage({ counts: { ...counts }, options: { timeLimitMs: deep ? 60000 : 15000, maxAlternatives: 60 } });
+  } catch (error) {
+    stopWorker();
+    showError(error.message);
+  }
 }
 
-function handleError(message) {
-  stopSearch();
-  $('#proof-badge').textContent = '需要重试';
-  $('#proof-badge').className = 'proof-badge pending';
-  $('#result-message').classList.add('warning');
-  $('#result-message').textContent = message;
-  $('#result-stale').hidden = !result;
+function showError(message) {
+  $('#status-chip').className = 'chip-status warn';
+  $('#status-chip').textContent = '需要重试';
+  $('#headline').textContent = '出了点问题';
+  $('#subline').textContent = message;
 }
+
+function buildScenarios() {
+  active = 0;
+  shown = PAGE;
+  if (result.complete && result.fill?.options.length) {
+    scenarioKind = 'fill';
+    scenarios = result.fill.options.map((option) => ({ placements: option.placements, added: option.added }));
+  } else if (result.complete && result.maxPlaced < result.total && result.alternatives.length) {
+    scenarioKind = 'remove';
+    scenarios = result.alternatives.map((alternative) => ({
+      placements: alternative.fill ? alternative.fill.options[0].placements : alternative.placements,
+      removed: alternative.removed,
+      swaps: alternative.fill ? alternative.fill.options.map((option) => option.added) : [],
+    }));
+  } else {
+    scenarioKind = null;
+    scenarios = [];
+  }
+}
+
+function currentPlacements() {
+  return scenarios.length ? scenarios[active].placements : result?.placements || [];
+}
+
+/* ---------- rendering ---------- */
+
+function renderBoard(animate = true) {
+  const placements = currentPlacements();
+  const pieces = decorate(placements);
+  const board = $('#board');
+  board.classList.remove('animate');
+  board.innerHTML = boardMarkup(placements);
+  if (animate && !reducedMotion.matches) {
+    void board.offsetWidth;
+    board.classList.add('animate');
+  }
+  const own = pieces.filter((piece) => !piece.added);
+  const added = pieces.filter((piece) => piece.added);
+  board.setAttribute('aria-label', `6 乘 6 棋盘，已放 ${own.length} 块${added.length ? `，建议补 ${added.length} 块` : ''}。${pieces.map((piece) => `${piece.added ? '建议补' : piece.label} ${SHAPE_MAP[piece.shapeId].name}`).join('，')}`);
+  $('#legend').innerHTML = pieces.map((piece) => `<span class="legend-item${piece.added ? ' ghost' : ''}" data-piece="${piece.key}" data-family="${SHAPE_MAP[piece.shapeId].family}"><b>${piece.label}</b>${SHAPE_MAP[piece.shapeId].name}</span>`).join('');
+  const usedCells = own.length * 4;
+  const time = result.elapsedMs < 1000 ? `${result.elapsedMs} 毫秒` : `${(result.elapsedMs / 1000).toFixed(1)} 秒`;
+  $('#meta').textContent = result.total === 0 ? '' : `已占 ${usedCells} / 36 格 · 利用率 ${Math.round(usedCells / 36 * 100)}% · 搜索 ${result.nodes.toLocaleString()} 个状态，用时 ${time}`;
+}
+
+function optionChips(map, sign) {
+  return Object.entries(map).map(([id, n]) => `<span class="piece-chip ${sign === '+' ? 'plus' : 'minus'}">${thumb(SHAPE_MAP[id], 'tiny')}<span>${sign} ${SHAPE_MAP[id].name}${n > 1 ? ` × ${n}` : ''}</span></span>`).join('');
+}
+
+function renderOptions() {
+  const box = $('#options');
+  box.hidden = scenarios.length === 0;
+  if (!scenarios.length) return;
+  const isFill = scenarioKind === 'fill';
+  const fill = result.fill;
+  $('#options-title').textContent = isFill ? (fill.exact ? '补上这些，刚好铺满' : '最多还能补上这些') : (result.minRemoved === 1 ? '拿掉一块就能放下' : `拿掉 ${result.minRemoved} 块就能放下`);
+  const listedAll = isFill ? fill.exhaustive && fill.found <= scenarios.length : result.alternativesComplete;
+  $('#options-count').textContent = `${listedAll ? '共' : '列出'} ${scenarios.length} 种`;
+  $('#options-note').textContent = isFill
+    ? (listedAll ? '点小棋盘查看摆法，满意就一键加入清单。' : '补法很多，这里挑了用到形状最少的几种。点小棋盘查看摆法。')
+    : (scenarios.some((scenario) => scenario.swaps.length) ? '每种拿法都能放下剩下的积木；虚线是换上后可以铺满的那一块。' : '每种拿法都能放下剩下的积木，相同形状不区分是哪一块。');
+  $('#options-grid').innerHTML = scenarios.slice(0, shown).map((scenario, index) => {
+    const body = isFill
+      ? `<div class="option-pieces">${optionChips(scenario.added, '+')}</div>`
+      : `<div class="option-pieces">${optionChips(scenario.removed, '−')}${scenario.swaps.length ? `<span class="swap-note">换成 ${scenario.swaps.map((swap) => piecesText(swap).replace(' × 1', '')).join(' 或 ')} 可铺满</span>` : ''}</div>`;
+    const label = isFill ? `补法 ${index + 1}：加 ${piecesText(scenario.added)}` : `拿法 ${index + 1}：拿掉 ${piecesText(scenario.removed)}`;
+    return `<article class="option${index === active ? ' active' : ''}" data-option="${index}" style="--i:${index}"><button class="option-view" type="button" data-view="${index}" aria-pressed="${index === active}" aria-label="${label}"><span class="board mini">${boardMarkup(scenario.placements, false)}</span></button>${body}<button class="apply" type="button" data-apply="${index}">${isFill ? '加入清单' : '就拿掉它'}</button></article>`;
+  }).join('');
+  const rest = scenarios.length - shown;
+  $('#more-options').hidden = rest <= 0;
+  $('#more-options').textContent = `显示更多（还有 ${Math.max(0, rest)} 种）`;
+}
+
+function renderResult() {
+  const { maxPlaced, total: all, complete, fill } = result;
+  const allFit = maxPlaced === all;
+  const free = 36 - maxPlaced * 4;
+  let headline;
+  let subline;
+  if (all === 0) {
+    headline = '棋盘还是空的';
+    subline = '在左边点几块积木，或者直接手绘一块。';
+  } else if (!complete) {
+    headline = `目前能放下 ${maxPlaced} 块`;
+    subline = '搜索到了时间上限，还不能确定这是不是最多。可以点「再搜 60 秒」。';
+  } else if (!allFit) {
+    headline = `最多放下 ${maxPlaced} 块`;
+    subline = `${all} 块没法同时放进去，至少要拿掉 ${result.minRemoved} 块。`;
+  } else if (free === 0) {
+    headline = '刚好铺满';
+    subline = `${all} 块积木，36 格一格不剩。`;
+  } else if (fill?.options.length && fill.exact) {
+    headline = `再加 ${fill.extra} 块就能铺满`;
+    subline = `${all} 块全部放下，还空 ${free} 格。虚线是建议补上的积木。`;
+  } else if (fill?.options.length) {
+    headline = `最多还能再加 ${fill.extra} 块`;
+    subline = `${all} 块全部放下。${fill.proven ? '这组积木怎么摆都铺不满' : '暂时没找到能铺满的补法'}，补上虚线的积木后还剩 ${free - fill.extra * 4} 格。`;
+  } else {
+    headline = '全部放下，但加不进新的了';
+    subline = `还空 ${free} 格，可无论怎么摆，它们都凑不成一块完整的积木。`;
+  }
+  $('#score').textContent = maxPlaced;
+  $('#score-total').textContent = all;
+  $('#headline').textContent = headline;
+  $('#subline').textContent = subline;
+  const chip = $('#status-chip');
+  chip.className = `chip-status ${all === 0 ? '' : complete ? 'ok' : 'warn'}`;
+  chip.textContent = all === 0 ? '等待选择' : complete ? '已证明最优' : '未证明最优';
+  $('#deepen').hidden = complete;
+  $('#export-button').disabled = all === 0;
+  const jump = $('#jump');
+  jump.hidden = all === 0;
+  jump.textContent = `${maxPlaced} / ${all} 块 · 看摆法 ↓`;
+  renderBoard();
+  renderOptions();
+}
+
+function selectScenario(index) {
+  if (index === active || !scenarios[index]) return;
+  active = index;
+  renderBoard();
+  document.querySelectorAll('.option').forEach((card) => {
+    const on = Number(card.dataset.option) === active;
+    card.classList.toggle('active', on);
+    card.querySelector('.option-view').setAttribute('aria-pressed', on);
+  });
+}
+
+function applyScenario(index) {
+  const scenario = scenarios[index];
+  if (!scenario) return;
+  const delta = scenarioKind === 'fill' ? scenario.added : scenario.removed;
+  const sign = scenarioKind === 'fill' ? 1 : -1;
+  for (const [id, n] of Object.entries(delta)) {
+    const next = Math.max(0, Math.min(MAX_EACH, (counts[id] || 0) + sign * n));
+    if (next === 0) delete counts[id]; else counts[id] = next;
+    flashCard(id);
+  }
+  inventoryChanged();
+}
+
+function focusPiece(key) {
+  document.querySelectorAll('#board [data-piece], #legend [data-piece]').forEach((node) => {
+    node.classList.toggle('dim', key !== null && node.dataset.piece !== key);
+  });
+}
+
+/* ---------- export ---------- */
 
 function exportBoard() {
-  if (!result) return;
-  const placements = decoratedPlacements(currentPlacements());
-  const header = result.complete ? `最多放下 ${result.maxPlaced} / ${result.total} 块` : `当前可放 ${result.maxPlaced} / ${result.total} 块 · 尚未证明最优`;
-  const context = activeScenario >= 0 ? `移除：${removedText(result.alternatives[activeScenario].removed)}` : '固定方向 · 只平移 · 不旋转 · 不重叠';
-  const descriptionLines = context.length > 42 ? context.match(/.{1,42}/g) : [context];
-  const boardY = 120 + Math.max(0, descriptionLines.length - 2) * 13;
-  const extraHeight = boardY - 120;
-  const occupied = new Map();
-  placements.forEach((p) => p.cells.forEach(([x, y]) => occupied.set(y * 6 + x, p)));
+  if (!result || result.total === 0) return;
+  const pieces = decorate(currentPlacements());
+  const own = pieces.filter((piece) => !piece.added);
+  const added = pieces.filter((piece) => piece.added);
+  const cellAt = new Map();
+  pieces.forEach((piece) => piece.cells.forEach(([x, y]) => cellAt.set(y * 6 + x, piece)));
   const rects = Array.from({ length: 36 }, (_, index) => {
-    const p = occupied.get(index);
+    const piece = cellAt.get(index);
     const x = 36 + index % 6 * 65;
-    const y = boardY + Math.floor(index / 6) * 65;
-    const label = p?.label || '';
-    return `<rect x="${x}" y="${y}" width="60" height="60" rx="6" fill="${p ? p.color.fill : '#f4f7ee'}" stroke="${p ? p.color.stroke : '#e1e8d8'}"/>${label ? `<text x="${x + 30}" y="${y + 38}" text-anchor="middle" fill="${p.color.ink}" font-size="22" font-weight="600">${label}</text>` : ''}`;
+    const y = 112 + Math.floor(index / 6) * 65;
+    if (!piece) return `<rect x="${x}" y="${y}" width="60" height="60" rx="10" fill="#ecebe6"/>`;
+    const family = SHAPE_MAP[piece.shapeId].family;
+    const color = FAMILY_COLORS[family];
+    return piece.added
+      ? `<rect x="${x + 1}" y="${y + 1}" width="58" height="58" rx="10" fill="${color}" fill-opacity=".14" stroke="${color}" stroke-width="2" stroke-dasharray="6 5"/><text x="${x + 30}" y="${y + 38}" text-anchor="middle" fill="${color}" font-size="22" font-weight="700">+</text>`
+      : `<rect x="${x}" y="${y}" width="60" height="60" rx="10" fill="${color}"/><text x="${x + 30}" y="${y + 38}" text-anchor="middle" fill="${FAMILY_INK[family]}" font-size="22" font-weight="700">${piece.label}</text>`;
   }).join('');
-  const footerStart = 540 + extraHeight;
-  const legend = placements.map((p, index) => {
-    const x = 36 + index % 3 * 142;
-    const y = footerStart + Math.floor(index / 3) * 30;
-    return `<rect x="${x}" y="${y - 14}" width="19" height="19" rx="4" fill="${p.color.fill}"/><text x="${x + 9.5}" y="${y}" text-anchor="middle" font-size="12" fill="${p.color.ink}">${p.label}</text><text x="${x + 26}" y="${y}" font-size="11" fill="#63775d">${SHAPE_MAP[p.shapeId].name}</text>`;
+  const legend = pieces.map((piece, index) => {
+    const x = 36 + index % 3 * 132;
+    const y = 536 + Math.floor(index / 3) * 28;
+    const family = SHAPE_MAP[piece.shapeId].family;
+    return `<rect x="${x}" y="${y - 14}" width="19" height="19" rx="5" fill="${FAMILY_COLORS[family]}" ${piece.added ? 'fill-opacity=".2"' : ''}/><text x="${x + 9.5}" y="${y}" text-anchor="middle" font-size="12" font-weight="700" fill="${piece.added ? FAMILY_COLORS[family] : FAMILY_INK[family]}">${piece.label}</text><text x="${x + 26}" y="${y}" font-size="12" fill="#55555c">${SHAPE_MAP[piece.shapeId].name}</text>`;
   }).join('');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="460" height="${690 + extraHeight}" viewBox="0 0 460 ${690 + extraHeight}"><rect width="460" height="${690 + extraHeight}" fill="#fafbf6"/><g font-family="Arial, 'Noto Sans SC', sans-serif"><text x="36" y="42" font-size="20" font-weight="600" fill="#164d42">积木实验室 · 6 × 6</text><text x="36" y="70" font-size="14" fill="#536d45">${header}</text>${descriptionLines.map((line, i) => `<text x="36" y="${91 + i * 13}" font-size="9" fill="#87967a">${line}</text>`).join('')}${rects}${legend}<text x="36" y="${663 + extraHeight}" font-size="9" fill="#98a58b">每个字母代表一块完整积木 · 空余 ${36 - placements.length * 4} 格</text></g></svg>`;
+  const context = scenarioKind === 'fill' ? `建议补上：${piecesText(scenarios[active].added)}`
+    : scenarioKind === 'remove' ? `拿掉：${piecesText(scenarios[active].removed)}` : '固定方向 · 只平移 · 不旋转 · 不重叠';
+  const height = 560 + Math.ceil(pieces.length / 3) * 28;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="460" height="${height}" viewBox="0 0 460 ${height}"><rect width="460" height="${height}" fill="#f5f4f0"/><g font-family="-apple-system, 'PingFang SC', 'Noto Sans SC', Arial, sans-serif"><text x="36" y="46" font-size="20" font-weight="700" fill="#18181b">积木实验室 · 6 × 6</text><text x="36" y="72" font-size="14" fill="#18181b">放下 ${own.length} / ${result.total} 块${added.length ? ` · 建议再补 ${added.length} 块` : ''}${result.complete ? '' : ' · 未证明最优'}</text><text x="36" y="92" font-size="11" fill="#77777f">${context}</text>${rects}${legend}</g></svg>`;
   const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
   const link = document.createElement('a');
-  link.href = url; link.download = `积木摆法-${result.maxPlaced}块${activeScenario >= 0 ? `-方案${activeScenario + 1}` : ''}.svg`;
-  document.body.append(link); link.click(); link.remove();
+  link.href = url;
+  link.download = `积木摆法-${own.length}块${scenarios.length ? `-方案${active + 1}` : ''}.svg`;
+  document.body.append(link);
+  link.click();
+  link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-$('#inventory-list').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-adjust]');
-  if (!button) return;
-  const id = button.dataset.id;
-  counts[id] = Math.max(0, Math.min(99, (counts[id] || 0) + Number(button.dataset.adjust)));
-  inventoryChanged(false);
+/* ---------- events ---------- */
+
+$('#inventory').addEventListener('click', (event) => {
+  const step = event.target.closest('[data-step]');
+  const add = event.target.closest('[data-add]');
+  if (step) setCount(step.dataset.id, (counts[step.dataset.id] || 0) + Number(step.dataset.step));
+  else if (add) setCount(add.dataset.add, (counts[add.dataset.add] || 0) + 1);
 });
-$('#inventory-list').addEventListener('input', (event) => {
-  const input = event.target.closest('[data-count]');
-  if (!input) return;
-  counts[input.dataset.count] = Math.max(0, Math.min(99, Math.trunc(Number(input.value) || 0)));
-  inventoryChanged(false);
-});
-$('#inventory-list').addEventListener('change', (event) => {
-  const input = event.target.closest('[data-count]');
-  if (input) input.value = counts[input.dataset.count] || 0;
-});
-$('#solve-button').addEventListener('click', () => solve(true));
-$('#reset-example').addEventListener('click', () => { counts = { ...DEFAULT }; inventoryChanged(); solve(); });
-$('#clear-all').addEventListener('click', () => { counts = {}; inventoryChanged(); solve(); });
-$('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
-document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => document.getElementById(button.dataset.close).close()));
-document.querySelectorAll('dialog').forEach((dialog) => dialog.addEventListener('click', (event) => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } }));
-$('#alternatives-grid').addEventListener('click', (event) => { const button = event.target.closest('[data-scenario]'); if (!button || busy) return; activeScenario = Number(button.dataset.scenario); displayBoard(); renderAlternatives(); });
-$('#more-alternatives').addEventListener('click', () => { shownAlternatives += 8; renderAlternatives(); });
+$('#load-example').addEventListener('click', () => { counts = { ...DEFAULT }; inventoryChanged(); });
+$('#clear-all').addEventListener('click', () => { counts = {}; inventoryChanged(); });
+$('#deepen').addEventListener('click', () => solve(true));
 $('#export-button').addEventListener('click', exportBoard);
-$('#piece-legend').addEventListener('pointerover', (event) => { const legend = event.target.closest('[data-highlight]'); if (!legend) return; $('#board').querySelectorAll('[data-piece]').forEach((cell) => cell.classList.toggle('dimmed', cell.dataset.piece !== legend.dataset.highlight)); });
-$('#piece-legend').addEventListener('pointerleave', () => $('#board').querySelectorAll('.dimmed').forEach((cell) => cell.classList.remove('dimmed')));
+$('#options-grid').addEventListener('click', (event) => {
+  const apply = event.target.closest('[data-apply]');
+  if (apply) { applyScenario(Number(apply.dataset.apply)); return; }
+  const card = event.target.closest('[data-option]');
+  if (card) selectScenario(Number(card.dataset.option));
+});
+$('#more-options').addEventListener('click', () => { shown += PAGE; renderOptions(); });
+for (const id of ['#board', '#legend']) {
+  $(id).addEventListener('pointerover', (event) => {
+    const node = event.target.closest('[data-piece]');
+    focusPiece(node ? node.dataset.piece : null);
+  });
+  $(id).addEventListener('pointerleave', () => focusPiece(null));
+}
+$('#jump').addEventListener('click', () => $('#stage').scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'start' }));
+$('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
+document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
+$('#help-dialog').addEventListener('click', (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+
 restoreInventory();
 renderInventory();
-displayBoard();
+setupDraw();
+$('#board').innerHTML = boardMarkup([]);
 solve();

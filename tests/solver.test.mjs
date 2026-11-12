@@ -252,3 +252,56 @@ test('invalid counts and non-finite search limits fail clearly', () => {
   assert.throws(() => solveInventory({}, { timeLimitMs: NaN }), RangeError);
   assert.throws(() => solveInventory({}, { maxAlternatives: Infinity }), RangeError);
 });
+
+function validateFill(option, inventory, extra) {
+  const added = option.placements.filter((piece) => piece.added);
+  const own = option.placements.filter((piece) => !piece.added);
+  assert.equal(added.length, extra);
+  const merged = { ...inventory };
+  for (const [id, count] of Object.entries(option.added)) merged[id] = (merged[id] || 0) + count;
+  validatePlacements(option.placements, merged);
+  const ownUsed = validatePlacements(own, inventory);
+  for (const [id, count] of Object.entries(inventory)) assert.equal(ownUsed[id] || 0, count, 'every owned piece stays on the board');
+  const addedUsed = {};
+  for (const piece of added) addedUsed[piece.shapeId] = (addedUsed[piece.shapeId] || 0) + 1;
+  assert.deepEqual(addedUsed, option.added);
+}
+
+test('fill suggestions complete the board when everything fits with room to spare', () => {
+  const squares = { o_square: 8 };
+  const result = solveInventory(squares);
+  assert.equal(result.maxPlaced, 8);
+  assert.ok(result.fill && result.fill.exact && result.fill.extra === 1);
+  assert.ok(result.fill.options.some((option) => option.added.o_square === 1));
+  for (const option of result.fill.options) {
+    validateFill(option, squares, 1);
+    assert.equal(option.placements.length, 9);
+  }
+
+  const example = { i_h: 2, z_h: 1, s_h: 1, z_v: 1, l_left: 1, t_right: 1, l_right: 1 };
+  const second = solveInventory(example);
+  assert.equal(second.maxPlaced, 8);
+  assert.ok(second.fill);
+  for (const option of second.fill.options) validateFill(option, example, second.fill.extra);
+  const signatures = second.fill.options.map((option) => JSON.stringify(option.added));
+  assert.equal(new Set(signatures).size, signatures.length, 'each suggestion adds a different set');
+
+  const few = { t_up: 2, i_v: 1 };
+  const third = solveInventory(few);
+  assert.ok(third.fill.exact && third.fill.extra === 6 && third.fill.options.length > 0);
+  for (const option of third.fill.options) validateFill(option, few, 6);
+});
+
+test('no fill suggestion for an empty, full, or overfull inventory; removal options may carry a swap', () => {
+  assert.equal(solveInventory({}).fill, null);
+  assert.equal(solveInventory({ o_square: 9 }).fill, null);
+  const inventory = { i_h: 2, z_h: 1, s_h: 1, z_v: 1, l_left: 1, t_right: 1, l_right: 1, o_square: 1 };
+  const result = solveInventory(inventory);
+  assert.equal(result.fill, null);
+  for (const alternative of result.alternatives) {
+    if (!alternative.fill) continue;
+    const retained = { ...inventory };
+    for (const [id, count] of Object.entries(alternative.removed)) retained[id] -= count;
+    for (const option of alternative.fill.options) validateFill(option, retained, alternative.fill.extra);
+  }
+});

@@ -103,6 +103,9 @@ export function solveInventory(input = {}, options = {}) {
   let alternativesComplete = true;
   const alternatives = [];
   const alternativeSignatures = new Set();
+  const alternativeInventories = [];
+  const maxFills = Math.max(1, Math.floor(Number(options.maxFills ?? 12)) || 12);
+  const fillBudgetMs = Math.max(1, Number(options.fillBudgetMs ?? 1200) || 1200);
 
   function outOfTime(force = false) {
     if ((force || (nodes & 1023) === 0) && performance.now() >= deadline) timedOut = true;
@@ -165,6 +168,87 @@ export function solveInventory(input = {}, options = {}) {
     return visit(0n, 0, target, 0);
   }
 
+  /**
+   * Layouts that use the whole `inventory` plus exactly `extra` additional
+   * pieces of any shape. Distinct results differ in the multiset of additions.
+   * `exhaustive` is true only when every possibility was explored.
+   */
+  function findFills(inventory, extra, collect, budgetMs) {
+    const counts = [...inventory];
+    let need = counts.reduce((a, b) => a + b, 0);
+    const addedCounts = Array(SHAPES.length).fill(0);
+    const path = [];
+    const flags = [];
+    const failed = new Set();
+    const found = new Map();
+    const localDeadline = Math.min(deadline, performance.now() + budgetMs);
+    let exhaustive = true;
+    let stop = false;
+    function record() {
+      const signature = addedCounts.join(',');
+      if (found.has(signature)) return;
+      const added = {};
+      addedCounts.forEach((count, index) => { if (count > 0) added[SHAPES[index].id] = count; });
+      found.set(signature, {
+        kinds: Object.keys(added).length,
+        added,
+        placements: path.map((placement, index) => ({ ...publicPlacement(placement), added: flags[index] })),
+      });
+      if (found.size >= collect) {
+        stop = true;
+        exhaustive = false;
+      }
+    }
+    function visit(blocked, blockedCount, wild, nextIndex) {
+      nodes += 1;
+      if ((nodes & 255) === 0 && performance.now() >= localDeadline) {
+        stop = true;
+        exhaustive = false;
+        return 0;
+      }
+      const remaining = need + wild;
+      if (remaining === 0) {
+        record();
+        return 1;
+      }
+      if (36 - blockedCount < remaining * 4) return 0;
+      while (nextIndex < 36 && (blocked & BITS[nextIndex]) !== 0n) nextIndex += 1;
+      if (nextIndex === 36) return 0;
+      const key = `${blocked.toString(36)}:${wild}:${counts.join(',')}`;
+      if (failed.has(key)) return 0;
+      if (remaining >= 2 && !componentCapacity(FULL ^ blocked, remaining)) return 0;
+      let hits = 0;
+      for (const placement of COVERING[nextIndex]) {
+        if ((blocked & placement.mask) !== 0n) continue;
+        const shape = placement.shapeIndex;
+        // Owned pieces are always consumed first, so each tiling is visited once.
+        const own = counts[shape] > 0;
+        if (!own && wild === 0) continue;
+        if (own) { counts[shape] -= 1; need -= 1; } else addedCounts[shape] += 1;
+        path.push(placement);
+        flags.push(!own);
+        hits += visit(blocked | placement.mask, blockedCount + 4, own ? wild : wild - 1, nextIndex + 1);
+        path.pop();
+        flags.pop();
+        if (own) { counts[shape] += 1; need += 1; } else addedCounts[shape] -= 1;
+        if (stop) return hits;
+      }
+      if (36 - blockedCount > remaining * 4) {
+        hits += visit(blocked | BITS[nextIndex], blockedCount + 1, wild, nextIndex + 1);
+        if (stop) return hits;
+      }
+      if (hits === 0) {
+        if (failed.size > 180000) failed.clear();
+        failed.add(key);
+      }
+      return hits;
+    }
+    visit(0n, 0, extra, 0);
+    const options = [...found.values()].sort((x, y) => x.kinds - y.kinds)
+      .map(({ added, placements }) => ({ added, placements }));
+    return { options, exhaustive };
+  }
+
   for (let target = Math.min(total, 9); target >= best.length; target -= 1) {
     if (target === best.length) {
       complete = true;
@@ -192,7 +276,8 @@ export function solveInventory(input = {}, options = {}) {
     original.forEach((count, index) => {
       if (count > retained[index]) removed[SHAPES[index].id] = count - retained[index];
     });
-    alternatives.push({ removed, placements: placements.map(publicPlacement) });
+    alternatives.push({ removed, placements: placements.map(publicPlacement), fill: null });
+    alternativeInventories.push([...retained]);
     return true;
   }
 
@@ -231,7 +316,43 @@ export function solveInventory(input = {}, options = {}) {
     alternativesComplete = false;
   }
 
+  // When everything fits with room to spare, suggest what to add to fill the
+  // board; `exact` means the additions leave no empty cell at all.
+  let fill = null;
+  if (complete && total > 0 && best.length === total && total < 9) {
+    const room = 9 - total;
+    let proven = true;
+    for (let extra = room; extra >= 1; extra -= 1) {
+      const found = findFills(available, extra, 150, fillBudgetMs);
+      if (found.options.length > 0) {
+        fill = {
+          extra,
+          exact: extra === room,
+          proven,
+          exhaustive: found.exhaustive,
+          found: found.options.length,
+          options: found.options.slice(0, maxFills),
+        };
+        break;
+      }
+      if (!found.exhaustive) proven = false;
+    }
+    if (fill === null) fill = { extra: 0, exact: false, proven, exhaustive: proven, found: 0, options: [] };
+  }
+
+  // For each removal option, which pieces would turn the leftover gap into a full board.
+  if (complete && best.length < total && best.length < 9) {
+    const swapDeadline = performance.now() + Math.min(600, fillBudgetMs);
+    for (let index = 0; index < alternatives.length; index += 1) {
+      const left = swapDeadline - performance.now();
+      if (left <= 0) break;
+      const found = findFills(alternativeInventories[index], 9 - best.length, 3, Math.min(120, left));
+      if (found.options.length > 0) alternatives[index].fill = { extra: 9 - best.length, options: found.options };
+    }
+  }
+
   return {
+    fill,
     maxPlaced: best.length,
     total,
     minRemoved: complete ? total - best.length : null,

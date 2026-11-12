@@ -24,38 +24,18 @@
   <main class="layout">
     <section id="picker" class="picker" aria-label="选择积木">
       <div class="picker-head">
-        <div>
-          <h1>选积木</h1>
-          <p class="lede">点一下加一块，右边立刻算出最好的摆法。</p>
+        <h1>选积木</h1>
+        <div class="capacity">
+          <div class="capacity-line"><span><strong id="total-count">0</strong> 块</span><span class="capacity-area"><span id="area-count">0</span> / 36 格</span></div>
+          <div class="meter" aria-hidden="true"><span id="meter-fill"></span></div>
         </div>
         <div class="picker-tools">
-          <button id="load-example" class="ghost-button" type="button">载入示例</button>
+          <button id="load-example" class="ghost-button" type="button">示例</button>
           <button id="clear-all" class="ghost-button" type="button">清空</button>
         </div>
       </div>
-
-      <div class="capacity">
-        <div class="capacity-line">
-          <span><strong id="total-count">0</strong> 块</span>
-          <span class="capacity-area"><span id="area-count">0</span> / 36 格</span>
-        </div>
-        <div class="meter" aria-hidden="true"><span id="meter-fill"></span></div>
-        <p id="capacity-note" class="capacity-note"></p>
-      </div>
-
-      <div class="draw" aria-label="手绘添加积木">
-        <div id="draw-pad" class="draw-pad" role="group" aria-label="4 乘 4 画板"></div>
-        <div class="draw-side">
-          <h2>手绘一块</h2>
-          <p id="draw-hint" class="draw-hint" role="status" aria-live="polite">按住拖动，画出 4 个相连的格子。</p>
-          <div class="draw-actions">
-            <button id="draw-add" class="solid-button" type="button" disabled>加入清单</button>
-            <button id="draw-clear" class="ghost-button" type="button" disabled>重画</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="inventory" class="inventory"></div>
+      <p id="capacity-note" class="capacity-note"></p>
+      <div id="inventory" class="cards"></div>
     </section>
 
     <section id="stage" class="stage" aria-label="摆放结果">
@@ -99,7 +79,7 @@
     <div class="dialog-body">
     <div class="dialog-head"><h2>怎么玩</h2><button class="icon-button" type="button" data-close aria-label="关闭">×</button></div>
     <ol class="help-steps">
-      <li><b>选积木。</b>19 种固定方向全部列出，点小图加一块，用 − / + 调数量。也可以在画板上手绘 4 个相连的格子，自动识别成对应的积木。</li>
+      <li><b>选积木。</b>19 种固定方向全部列出，点小图加一块，用 − / + 调数量。也可以在左上角的画板上拖动画出 4 个相连的格子，松手后自动识别并加入。</li>
       <li><b>看摆法。</b>每块只能平移，不能旋转、翻转、重叠或越界。改动后会自动重新计算。</li>
       <li><b>放不下时</b>，会告诉你最多能放几块、最少要拿掉哪些，以及换成哪一块可以铺满。</li>
       <li><b>有空位时</b>，会用虚线画出建议补上的积木，告诉你加什么可以把 36 格填满。</li>

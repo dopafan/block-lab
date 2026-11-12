@@ -50,7 +50,15 @@ function piecesText(map) {
 /** Per-cell flags telling which sides are open, so one piece reads as one solid shape. */
 function edgeStyle(cells, x, y) {
   const has = (cx, cy) => cells.some(([px, py]) => px === cx && py === cy);
-  return `--t:${has(x, y - 1) ? 0 : 1};--r:${has(x + 1, y) ? 0 : 1};--b:${has(x, y + 1) ? 0 : 1};--l:${has(x - 1, y) ? 0 : 1}`;
+  const up = has(x, y - 1);
+  const right = has(x + 1, y);
+  const down = has(x, y + 1);
+  const left = has(x - 1, y);
+  // d / e / f mark a filled 2×2 block, where the bridges must not draw an outline.
+  const d = right && down && has(x + 1, y + 1) ? 1 : 0;
+  const e = left && down && has(x - 1, y + 1) ? 1 : 0;
+  const f = up && right && has(x + 1, y - 1) ? 1 : 0;
+  return `--t:${up ? 0 : 1};--r:${right ? 0 : 1};--b:${down ? 0 : 1};--l:${left ? 0 : 1};--d:${d};--e:${e};--f:${f}`;
 }
 
 /** Every thumbnail uses the same cell size, whatever the shape's bounding box. */
@@ -106,15 +114,13 @@ function restoreInventory() {
 }
 
 function renderInventory() {
-  $('#inventory').innerHTML = FAMILIES.map(({ id, name }) => {
-    const variants = SHAPES.filter((shape) => shape.family === id);
-    return `<section class="family" data-family="${id}"><div class="family-head"><h2><span class="family-dot"></span>${name}</h2><span class="family-count" data-family-count="${id}"></span></div><div class="cards">${variants.map((shape) => `<div class="card" data-shape="${shape.id}"><button class="card-main" type="button" data-add="${shape.id}" aria-label="加一块${shape.name}"><span class="thumb-box">${thumb(shape)}</span><span class="card-name">${shape.name}</span></button><div class="stepper"><button type="button" data-step="-1" data-id="${shape.id}" aria-label="减少${shape.name}">−</button><span class="count" data-count="${shape.id}" aria-label="${shape.name}数量">0</span><button type="button" data-step="1" data-id="${shape.id}" aria-label="增加${shape.name}">+</button></div></div>`).join('')}</div></section>`;
-  }).join('');
+  const ordered = FAMILIES.flatMap(({ id }) => SHAPES.filter((shape) => shape.family === id));
+  $('#inventory').innerHTML = `<div class="card draw-card"><span class="draw-title">手绘一块</span><div id="draw-pad" class="draw-pad" role="group" aria-label="4 乘 4 画板"></div><p id="draw-hint" class="draw-hint" role="status" aria-live="polite"></p></div>${ordered.map((shape) => `<div class="card" data-shape="${shape.id}" data-family="${shape.family}"><button class="card-main" type="button" data-add="${shape.id}" aria-label="加一块${shape.name}"><span class="thumb-box">${thumb(shape)}</span><span class="card-name">${shape.name}</span></button><div class="stepper"><button type="button" data-step="-1" data-id="${shape.id}" aria-label="减少${shape.name}">−</button><span class="count" data-count="${shape.id}" aria-label="${shape.name}数量">0</span><button type="button" data-step="1" data-id="${shape.id}" aria-label="增加${shape.name}">+</button></div></div>`).join('')}`;
   updateInventory();
 }
 
 function updateInventory() {
-  document.querySelectorAll('.card').forEach((card) => {
+  document.querySelectorAll('.card[data-shape]').forEach((card) => {
     const n = counts[card.dataset.shape] || 0;
     card.classList.toggle('on', n > 0);
     const count = card.querySelector('.count');
@@ -127,19 +133,14 @@ function updateInventory() {
     card.querySelector('[data-step="-1"]').disabled = n === 0;
     card.querySelector('[data-step="1"]').disabled = n >= MAX_EACH;
   });
-  document.querySelectorAll('[data-family-count]').forEach((badge) => {
-    const selected = SHAPES.filter((shape) => shape.family === badge.dataset.familyCount)
-      .reduce((sum, shape) => sum + (counts[shape.id] || 0), 0);
-    badge.textContent = selected > 0 ? `${selected} 块` : '';
-  });
   const n = total();
   $('#total-count').textContent = n;
   $('#area-count').textContent = n * 4;
   $('#meter-fill').style.width = `${Math.min(100, n * 4 / 36 * 100)}%`;
-  $('.capacity').classList.toggle('over', n > 9);
+  $('#picker').classList.toggle('over', n > 9);
   $('#capacity-note').textContent = n > 9 ? `超出棋盘面积，至少要拿掉 ${n - 9} 块。`
     : n === 9 ? '面积刚好 36 格，能不能铺满要看形状。'
-      : n === 0 ? '还没有选积木。' : `还空 ${36 - n * 4} 格，最多能再加 ${9 - n} 块。`;
+      : n === 0 ? '点小图加一块，或在左上角手绘。' : `还空 ${36 - n * 4} 格，最多能再加 ${9 - n} 块。`;
 }
 
 function setCount(id, value) {
@@ -168,13 +169,14 @@ function flashCard(id) {
 
 const drawn = new Set();
 let drawMode = null;
+let committing = false;
 
 function drawnShape() {
   if (drawn.size !== 4) return null;
   return SHAPE_BY_KEY[cellsKey([...drawn].map((index) => [index % 4, Math.floor(index / 4)]))] || null;
 }
 
-function renderDraw() {
+function renderDraw(keepHint = false) {
   const shape = drawnShape();
   const pad = $('#draw-pad');
   pad.dataset.family = shape ? shape.family : '';
@@ -183,19 +185,37 @@ function renderDraw() {
     cell.classList.toggle('on', on);
     cell.setAttribute('aria-pressed', on);
   });
-  $('#draw-add').disabled = !shape;
-  $('#draw-clear').disabled = drawn.size === 0;
-  $('#draw-hint').textContent = drawn.size === 0 ? '按住拖动，画出 4 个相连的格子。'
-    : drawn.size < 4 ? `再画 ${4 - drawn.size} 格。`
-      : shape ? `识别为「${shape.name}」。` : '4 个格子要边贴边连在一起。';
-  $('#draw-hint').classList.toggle('ok', Boolean(shape));
-  $('#draw-hint').classList.toggle('bad', drawn.size === 4 && !shape);
+  if (keepHint) return;
+  const hint = $('#draw-hint');
+  hint.textContent = drawn.size === 0 ? '拖动画 4 格'
+    : drawn.size < 4 ? `再画 ${4 - drawn.size} 格`
+      : shape ? shape.name : '要连在一起';
+  hint.classList.toggle('ok', Boolean(shape));
+  hint.classList.toggle('bad', drawn.size === 4 && !shape);
 }
 
 function paint(index) {
+  if (committing) return;
   if (drawMode === 'erase') drawn.delete(index);
   else if (drawn.size < 4) drawn.add(index);
   renderDraw();
+}
+
+/** A finished, valid drawing is added as soon as the stroke ends. */
+function commitDraw() {
+  const shape = drawnShape();
+  if (!shape || committing) return;
+  committing = true;
+  setCount(shape.id, (counts[shape.id] || 0) + 1);
+  flashCard(shape.id);
+  const hint = $('#draw-hint');
+  hint.textContent = `已加入 ${shape.name}`;
+  hint.classList.add('ok');
+  setTimeout(() => {
+    drawn.clear();
+    committing = false;
+    renderDraw(true);
+  }, 450);
 }
 
 function setupDraw() {
@@ -217,7 +237,11 @@ function setupDraw() {
     const index = Number(cell.dataset.draw);
     if (drawMode === 'paint' ? !drawn.has(index) : drawn.has(index)) paint(index);
   });
-  const end = () => { drawMode = null; };
+  const end = () => {
+    if (!drawMode) return;
+    drawMode = null;
+    commitDraw();
+  };
   pad.addEventListener('pointerup', end);
   pad.addEventListener('pointercancel', end);
   // Keyboard activation arrives as a click with no pointer detail.
@@ -228,17 +252,7 @@ function setupDraw() {
     drawMode = drawn.has(index) ? 'erase' : 'paint';
     paint(index);
     drawMode = null;
-  });
-  $('#draw-clear').addEventListener('click', () => { drawn.clear(); renderDraw(); });
-  $('#draw-add').addEventListener('click', () => {
-    const shape = drawnShape();
-    if (!shape) return;
-    drawn.clear();
-    renderDraw();
-    $('#draw-hint').textContent = `已加入一块「${shape.name}」。`;
-    $('#draw-hint').classList.add('ok');
-    setCount(shape.id, (counts[shape.id] || 0) + 1);
-    flashCard(shape.id);
+    commitDraw();
   });
   renderDraw();
 }
@@ -374,7 +388,7 @@ function renderResult() {
   let subline;
   if (all === 0) {
     headline = '棋盘还是空的';
-    subline = '在左边点几块积木，或者直接手绘一块。';
+    subline = '点几块积木，或者直接手绘一块。';
   } else if (!complete) {
     headline = `目前能放下 ${maxPlaced} 块`;
     subline = '搜索到了时间上限，还不能确定这是不是最多。可以点「再搜 60 秒」。';

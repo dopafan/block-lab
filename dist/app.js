@@ -1,4 +1,4 @@
-import { SHAPES } from './solver.js';
+import { SHAPES } from './solver.js?v=4';
 
 const $ = (selector) => document.querySelector(selector);
 const FAMILIES = [
@@ -12,6 +12,8 @@ const FAMILY_COLORS = { I: '#22b3a4', O: '#f4b740', T: '#9b6cf0', Z: '#f0695a', 
 const FAMILY_INK = { I: '#ffffff', O: '#4a3200', T: '#ffffff', Z: '#ffffff', L: '#ffffff' };
 const SHAPE_MAP = Object.fromEntries(SHAPES.map((shape) => [shape.id, shape]));
 const SHAPE_ORDER = Object.fromEntries(SHAPES.map((shape, index) => [shape.id, index]));
+// Orientations of one family get slightly different shades so neighbours stay distinguishable.
+const SHAPE_SHADE = Object.fromEntries(SHAPES.map((shape) => [shape.id, SHAPES.filter((other) => other.family === shape.family).indexOf(shape) % 4]));
 const SHAPE_BY_KEY = Object.fromEntries(SHAPES.map((shape) => [cellsKey(shape.cells), shape]));
 const DEFAULT = { i_h: 2, z_h: 1, s_h: 1, z_v: 1, l_left: 1, t_right: 1, l_right: 1, o_square: 1 };
 const STORE_KEY = 'block-lab-inventory-v1';
@@ -30,6 +32,7 @@ let runId = 0;
 let solveTimer = null;
 let busyTimer = null;
 let busyTick = null;
+let animateTimer = null;
 
 /* ---------- helpers ---------- */
 
@@ -66,7 +69,7 @@ function thumb(shape, extraClass = '') {
   const width = Math.max(...shape.cells.map(([x]) => x)) + 1;
   const height = Math.max(...shape.cells.map(([, y]) => y)) + 1;
   const tiles = shape.cells.map(([x, y]) => `<i class="tile" style="grid-column:${x + 1};grid-row:${y + 1};${edgeStyle(shape.cells, x, y)}"></i>`).join('');
-  return `<span class="thumb ${extraClass}" data-family="${shape.family}" style="--w:${width};--h:${height}" aria-hidden="true">${tiles}</span>`;
+  return `<span class="thumb ${extraClass}" data-family="${shape.family}" style="--w:${width};--h:${height};--k:${SHAPE_SHADE[shape.id]}" aria-hidden="true">${tiles}</span>`;
 }
 
 function decorate(placements) {
@@ -88,7 +91,8 @@ function boardMarkup(placements, labels = true) {
     const first = piece.cells.reduce((a, b) => (b[1] * 6 + b[0] < a[1] * 6 + a[0] ? b : a));
     for (const [x, y] of piece.cells) {
       const label = labels && first[0] === x && first[1] === y ? piece.label : '';
-      html += `<i class="tile${piece.added ? ' ghost' : ''}" data-family="${family}" data-piece="${piece.key}" style="grid-column:${x + 1};grid-row:${y + 1};${edgeStyle(piece.cells, x, y)};--i:${index}">${label}</i>`;
+      const action = labels ? ` data-shape="${piece.shapeId}" title="${piece.added ? '点击加入' : '点击拿掉'} ${SHAPE_MAP[piece.shapeId].name}"` : '';
+      html += `<i class="tile${piece.added ? ' ghost' : ''}" data-family="${family}" data-piece="${piece.key}"${action} style="grid-column:${x + 1};grid-row:${y + 1};${edgeStyle(piece.cells, x, y)};--i:${index};--k:${SHAPE_SHADE[piece.shapeId]}">${label}</i>`;
     }
   });
   return html;
@@ -280,7 +284,7 @@ function solve(deep = false) {
     busyTick = setInterval(() => { chip.textContent = `搜索中 · ${Math.floor((performance.now() - started) / 1000)} 秒`; }, 500);
   }, 220);
   try {
-    worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    worker = new Worker(new URL('./worker.js?v=4', import.meta.url), { type: 'module' });
     worker.onmessage = ({ data }) => {
       if (run !== runId) return;
       stopWorker();
@@ -314,6 +318,9 @@ function buildScenarios() {
   if (result.complete && result.fill?.options.length) {
     scenarioKind = 'fill';
     scenarios = result.fill.options.map((option) => ({ placements: option.placements, added: option.added }));
+  } else if (result.complete && result.fill?.swaps?.length) {
+    scenarioKind = 'swap';
+    scenarios = result.fill.swaps.map((swap) => ({ placements: swap.placements, removed: swap.removed, added: swap.added }));
   } else if (result.complete && result.maxPlaced < result.total && result.alternatives.length) {
     scenarioKind = 'remove';
     scenarios = result.alternatives.map((alternative) => ({
@@ -342,11 +349,14 @@ function renderBoard(animate = true) {
   if (animate && !reducedMotion.matches) {
     void board.offsetWidth;
     board.classList.add('animate');
+    // Never leave pieces invisible if the browser pauses animations (background tab).
+    clearTimeout(animateTimer);
+    animateTimer = setTimeout(() => board.classList.remove('animate'), 1400);
   }
   const own = pieces.filter((piece) => !piece.added);
   const added = pieces.filter((piece) => piece.added);
   board.setAttribute('aria-label', `6 乘 6 棋盘，已放 ${own.length} 块${added.length ? `，建议补 ${added.length} 块` : ''}。${pieces.map((piece) => `${piece.added ? '建议补' : piece.label} ${SHAPE_MAP[piece.shapeId].name}`).join('，')}`);
-  $('#legend').innerHTML = pieces.map((piece) => `<span class="legend-item${piece.added ? ' ghost' : ''}" data-piece="${piece.key}" data-family="${SHAPE_MAP[piece.shapeId].family}"><b>${piece.label}</b>${SHAPE_MAP[piece.shapeId].name}</span>`).join('');
+  $('#legend').innerHTML = pieces.map((piece) => `<button type="button" class="legend-item${piece.added ? ' ghost' : ''}" data-piece="${piece.key}" data-shape="${piece.shapeId}" data-family="${SHAPE_MAP[piece.shapeId].family}" title="${piece.added ? '点击加入' : '点击拿掉'} ${SHAPE_MAP[piece.shapeId].name}"><b>${piece.label}</b>${SHAPE_MAP[piece.shapeId].name}<span class="legend-x" aria-hidden="true">${piece.added ? '+' : '×'}</span></button>`).join('');
   const usedCells = own.length * 4;
   const time = result.elapsedMs < 1000 ? `${result.elapsedMs} 毫秒` : `${(result.elapsedMs / 1000).toFixed(1)} 秒`;
   $('#meta').textContent = result.total === 0 ? '' : `已占 ${usedCells} / 36 格 · 利用率 ${Math.round(usedCells / 36 * 100)}% · 搜索 ${result.nodes.toLocaleString()} 个状态，用时 ${time}`;
@@ -359,21 +369,32 @@ function optionChips(map, sign) {
 function renderOptions() {
   const box = $('#options');
   box.hidden = scenarios.length === 0;
-  if (!scenarios.length) return;
-  const isFill = scenarioKind === 'fill';
+  $('#options-empty').hidden = scenarios.length > 0;
+  if (!scenarios.length) {
+    $('#options-empty-text').textContent = result.total === 0 ? '选好积木后，这里会列出可以补上或需要拿掉的积木。'
+      : !result.complete ? '搜索还没完成，暂时给不出方案。'
+        : result.maxPlaced === 9 ? '已经铺满，不需要再调整。' : '这组积木没有可以补上的方案。';
+    return;
+  }
+  const kind = scenarioKind;
   const fill = result.fill;
-  $('#options-title').textContent = isFill ? (fill.exact ? '补上这些，刚好铺满' : '最多还能补上这些') : (result.minRemoved === 1 ? '拿掉一块就能放下' : `拿掉 ${result.minRemoved} 块就能放下`);
-  const listedAll = isFill ? fill.exhaustive && fill.found <= scenarios.length : result.alternativesComplete;
+  $('#options-title').textContent = kind === 'fill' ? (fill.exact ? '补上这些，刚好铺满' : '最多还能补上这些')
+    : kind === 'swap' ? '换一块就能铺满'
+      : (result.minRemoved === 1 ? '拿掉一块就能放下' : `拿掉 ${result.minRemoved} 块就能放下`);
+  const listedAll = kind === 'fill' ? fill.exhaustive && fill.found <= scenarios.length : kind === 'remove' && result.alternativesComplete;
   $('#options-count').textContent = `${listedAll ? '共' : '列出'} ${scenarios.length} 种`;
-  $('#options-note').textContent = isFill
+  $('#options-note').textContent = kind === 'fill'
     ? (listedAll ? '点小棋盘查看摆法，满意就一键加入清单。' : '补法很多，这里挑了用到形状最少的几种。点小棋盘查看摆法。')
-    : (scenarios.some((scenario) => scenario.swaps.length) ? '每种拿法都能放下剩下的积木；虚线是换上后可以铺满的那一块。' : '每种拿法都能放下剩下的积木，相同形状不区分是哪一块。');
+    : kind === 'swap' ? '现有积木怎么摆都留不出一块完整的空位。拿掉标 − 的那块，补上虚线的积木，就能铺满。'
+      : (scenarios.some((scenario) => scenario.swaps.length) ? '每种拿法都能放下剩下的积木；虚线是换上后可以铺满的那一块。' : '每种拿法都能放下剩下的积木，相同形状不区分是哪一块。');
+  const button = kind === 'fill' ? '加入清单' : kind === 'swap' ? '照这样换' : '就拿掉它';
   $('#options-grid').innerHTML = scenarios.slice(0, shown).map((scenario, index) => {
-    const body = isFill
-      ? `<div class="option-pieces">${optionChips(scenario.added, '+')}</div>`
-      : `<div class="option-pieces">${optionChips(scenario.removed, '−')}${scenario.swaps.length ? `<span class="swap-note">换成 ${scenario.swaps.map((swap) => piecesText(swap).replace(' × 1', '')).join(' 或 ')} 可铺满</span>` : ''}</div>`;
-    const label = isFill ? `补法 ${index + 1}：加 ${piecesText(scenario.added)}` : `拿法 ${index + 1}：拿掉 ${piecesText(scenario.removed)}`;
-    return `<article class="option${index === active ? ' active' : ''}" data-option="${index}" style="--i:${index}"><button class="option-view" type="button" data-view="${index}" aria-pressed="${index === active}" aria-label="${label}"><span class="board mini">${boardMarkup(scenario.placements, false)}</span></button>${body}<button class="apply" type="button" data-apply="${index}">${isFill ? '加入清单' : '就拿掉它'}</button></article>`;
+    const body = kind === 'remove'
+      ? `<div class="option-pieces">${optionChips(scenario.removed, '−')}${scenario.swaps.length ? `<span class="swap-note">换成 ${scenario.swaps.map((swap) => piecesText(swap).replace(' × 1', '')).join(' 或 ')} 可铺满</span>` : ''}</div>`
+      : `<div class="option-pieces">${scenario.removed ? optionChips(scenario.removed, '−') : ''}${optionChips(scenario.added, '+')}</div>`;
+    const label = kind === 'remove' ? `拿法 ${index + 1}：拿掉 ${piecesText(scenario.removed)}`
+      : `方案 ${index + 1}：${scenario.removed ? `拿掉 ${piecesText(scenario.removed)}，` : ''}加 ${piecesText(scenario.added)}`;
+    return `<article class="option${index === active ? ' active' : ''}" data-option="${index}" style="--i:${index}"><button class="option-view" type="button" data-view="${index}" aria-pressed="${index === active}" aria-label="${label}"><span class="board mini">${boardMarkup(scenario.placements, false)}</span></button>${body}<button class="apply" type="button" data-apply="${index}">${button}</button></article>`;
   }).join('');
   const rest = scenarios.length - shown;
   $('#more-options').hidden = rest <= 0;
@@ -404,6 +425,9 @@ function renderResult() {
   } else if (fill?.options.length) {
     headline = `最多还能再加 ${fill.extra} 块`;
     subline = `${all} 块全部放下。${fill.proven ? '这组积木怎么摆都铺不满' : '暂时没找到能铺满的补法'}，补上虚线的积木后还剩 ${free - fill.extra * 4} 格。`;
+  } else if (fill?.swaps?.length) {
+    headline = '换一块就能铺满';
+    subline = `${all} 块全部放下，但剩下的 ${free} 格怎么摆都凑不成一块积木。虚线是换上去的积木。`;
   } else {
     headline = '全部放下，但加不进新的了';
     subline = `还空 ${free} 格，可无论怎么摆，它们都凑不成一块完整的积木。`;
@@ -438,10 +462,10 @@ function selectScenario(index) {
 function applyScenario(index) {
   const scenario = scenarios[index];
   if (!scenario) return;
-  const delta = scenarioKind === 'fill' ? scenario.added : scenario.removed;
-  const sign = scenarioKind === 'fill' ? 1 : -1;
-  for (const [id, n] of Object.entries(delta)) {
-    const next = Math.max(0, Math.min(MAX_EACH, (counts[id] || 0) + sign * n));
+  const changes = { ...Object.fromEntries(Object.entries(scenario.removed || {}).map(([id, n]) => [id, -n])) };
+  if (scenarioKind !== 'remove') for (const [id, n] of Object.entries(scenario.added || {})) changes[id] = (changes[id] || 0) + n;
+  for (const [id, n] of Object.entries(changes)) {
+    const next = Math.max(0, Math.min(MAX_EACH, (counts[id] || 0) + n));
     if (next === 0) delete counts[id]; else counts[id] = next;
     flashCard(id);
   }
@@ -481,7 +505,8 @@ function exportBoard() {
     return `<rect x="${x}" y="${y - 14}" width="19" height="19" rx="5" fill="${FAMILY_COLORS[family]}" ${piece.added ? 'fill-opacity=".2"' : ''}/><text x="${x + 9.5}" y="${y}" text-anchor="middle" font-size="12" font-weight="700" fill="${piece.added ? FAMILY_COLORS[family] : FAMILY_INK[family]}">${piece.label}</text><text x="${x + 26}" y="${y}" font-size="12" fill="#55555c">${SHAPE_MAP[piece.shapeId].name}</text>`;
   }).join('');
   const context = scenarioKind === 'fill' ? `建议补上：${piecesText(scenarios[active].added)}`
-    : scenarioKind === 'remove' ? `拿掉：${piecesText(scenarios[active].removed)}` : '固定方向 · 只平移 · 不旋转 · 不重叠';
+    : scenarioKind === 'swap' ? `拿掉：${piecesText(scenarios[active].removed)}　补上：${piecesText(scenarios[active].added)}`
+      : scenarioKind === 'remove' ? `拿掉：${piecesText(scenarios[active].removed)}` : '固定方向 · 只平移 · 不旋转 · 不重叠';
   const height = 560 + Math.ceil(pieces.length / 3) * 28;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="460" height="${height}" viewBox="0 0 460 ${height}"><rect width="460" height="${height}" fill="#f5f4f0"/><g font-family="-apple-system, 'PingFang SC', 'Noto Sans SC', Arial, sans-serif"><text x="36" y="46" font-size="20" font-weight="700" fill="#18181b">积木实验室 · 6 × 6</text><text x="36" y="72" font-size="14" fill="#18181b">放下 ${own.length} / ${result.total} 块${added.length ? ` · 建议再补 ${added.length} 块` : ''}${result.complete ? '' : ' · 未证明最优'}</text><text x="36" y="92" font-size="11" fill="#77777f">${context}</text>${rects}${legend}</g></svg>`;
   const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
@@ -519,6 +544,14 @@ for (const id of ['#board', '#legend']) {
     focusPiece(node ? node.dataset.piece : null);
   });
   $(id).addEventListener('pointerleave', () => focusPiece(null));
+  // Clicking a placed piece removes it from the inventory; a suggested one is added.
+  $(id).addEventListener('click', (event) => {
+    const node = event.target.closest('[data-piece][data-shape]');
+    if (!node) return;
+    const shape = node.dataset.shape;
+    setCount(shape, (counts[shape] || 0) + (node.classList.contains('ghost') ? 1 : -1));
+    flashCard(shape);
+  });
 }
 $('#jump').addEventListener('click', () => $('#stage').scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'start' }));
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());

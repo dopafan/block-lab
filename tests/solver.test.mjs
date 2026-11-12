@@ -305,3 +305,19 @@ test('no fill suggestion for an empty, full, or overfull inventory; removal opti
     for (const option of alternative.fill.options) validateFill(option, retained, alternative.fill.extra);
   }
 });
+
+test('when nothing can be added, swapping one owned piece is suggested instead', () => {
+  const example = { i_h: 2, z_h: 1, s_h: 1, z_v: 1, l_left: 1, t_right: 1, l_right: 1 };
+  const result = solveInventory(example);
+  assert.ok(result.fill);
+  if (result.fill.exact) return;
+  assert.ok(result.fill.swaps.length > 0, 'a one-piece trade that fills the board exists');
+  for (const swap of result.fill.swaps) {
+    const [removedId] = Object.keys(swap.removed);
+    assert.equal(swap.removed[removedId], 1);
+    assert.ok(!swap.added[removedId], 'the removed shape is not simply added back');
+    const retained = { ...example, [removedId]: example[removedId] - 1 };
+    validateFill(swap, retained, 2);
+    assert.equal(swap.placements.length, 9);
+  }
+});

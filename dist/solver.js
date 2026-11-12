@@ -338,6 +338,27 @@ export function solveInventory(input = {}, options = {}) {
       if (!found.exhaustive) proven = false;
     }
     if (fill === null) fill = { extra: 0, exact: false, proven, exhaustive: proven, found: 0, options: [] };
+    // Nothing fills the board as it is: try trading one owned piece for others.
+    fill.swaps = [];
+    if (!fill.exact) {
+      const perType = [];
+      const swapDeadline = performance.now() + Math.min(900, fillBudgetMs);
+      for (let index = 0; index < SHAPES.length; index += 1) {
+        if (available[index] === 0) continue;
+        const left = swapDeadline - performance.now();
+        if (left <= 0) break;
+        const reduced = [...available];
+        reduced[index] -= 1;
+        const found = findFills(reduced, room + 1, 4, Math.min(150, left));
+        const usable = found.options.filter((option) => !option.added[SHAPES[index].id]);
+        if (usable.length > 0) perType.push(usable.map((option) => ({ removed: { [SHAPES[index].id]: 1 }, ...option })));
+      }
+      for (let round = 0; fill.swaps.length < maxFills && perType.some((list) => list.length > round); round += 1) {
+        for (const list of perType) {
+          if (list.length > round && fill.swaps.length < maxFills) fill.swaps.push(list[round]);
+        }
+      }
+    }
   }
 
   // For each removal option, which pieces would turn the leftover gap into a full board.

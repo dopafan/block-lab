@@ -182,7 +182,7 @@ button:disabled { cursor: default; }
 /* Each cell is inset on every side; bridges fill the seams between cells of one
    piece, so inner corners stay clean instead of leaving a step. */
 .tile {
-  --bw: 0px;
+  --bw: 0px; --o: 1px; /* bridges overlap solid cells by 1px to hide hairlines */
   position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; font-style: normal;
   margin: var(--gap);
   border: 0 dashed var(--c);
@@ -192,16 +192,16 @@ button:disabled { cursor: default; }
 }
 .tile::before, .tile::after { content: ""; position: absolute; background: inherit; border: 0 dashed var(--c); }
 .tile::before {
-  left: calc(100% - 1px); width: calc((1 - var(--r)) * (2 * var(--gap) + 2px));
+  left: calc(100% - var(--o)); width: calc((1 - var(--r)) * (2 * var(--gap) + 2 * var(--o)));
   top: calc(var(--t) * var(--bw) * -1); bottom: calc(var(--b) * var(--bw) * -1);
   border-width: calc((1 - var(--f)) * var(--bw)) 0 calc((1 - var(--d)) * var(--bw));
 }
 .tile::after {
-  top: calc(100% - 1px); height: calc((1 - var(--b)) * (2 * var(--gap) + 2px));
+  top: calc(100% - var(--o)); height: calc((1 - var(--b)) * (2 * var(--gap) + 2 * var(--o)));
   left: calc(var(--l) * var(--bw) * -1); right: calc(var(--r) * var(--bw) * -1 - var(--d) * 2 * var(--gap));
   border-width: 0 calc((1 - var(--d)) * var(--bw)) 0 calc((1 - var(--e)) * var(--bw));
 }
-.tile.ghost { --bw: 2px; background: color-mix(in srgb, var(--c) 16%, var(--board)); color: var(--c); }
+.tile.ghost { --bw: 2px; --o: 0px; background: color-mix(in srgb, var(--c) 16%, var(--board)); color: var(--c); }
 
 .board {
   --gap: 3px; --rad: 11px;
@@ -257,6 +257,7 @@ button:disabled { cursor: default; }
 .verdict { display: flex; align-items: center; gap: 18px; margin: 14px 0; }
 .score { flex: none; display: flex; align-items: baseline; gap: 6px; color: var(--ink-3); font-size: 14px; font-variant-numeric: tabular-nums; }
 .score strong { font-size: 60px; line-height: 1; font-weight: 800; letter-spacing: -.04em; color: var(--ink); }
+.stage.previewing .verdict-text h2 { color: var(--warn); }
 .verdict-text h2 { font-size: 19px; line-height: 1.3; font-weight: 700; }
 .verdict-text p { margin-top: 4px; font-size: 13px; color: var(--ink-2); }
 

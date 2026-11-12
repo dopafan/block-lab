@@ -1,4 +1,4 @@
-import { solveInventory } from './solver.js?v=5';
+import { solveInventory } from './solver.js?v=6';
 
 self.onmessage = ({ data }) => {
   try {

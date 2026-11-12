@@ -1,4 +1,4 @@
-import { SHAPES } from './solver.js?v=5';
+import { SHAPES } from './solver.js?v=6';
 
 const $ = (selector) => document.querySelector(selector);
 const FAMILIES = [
@@ -33,6 +33,7 @@ let solveTimer = null;
 let busyTimer = null;
 let busyTick = null;
 let animateTimer = null;
+let baseVerdict = { headline: '', subline: '' };
 
 /* ---------- helpers ---------- */
 
@@ -373,7 +374,7 @@ function solve(deep = false) {
     busyTick = setInterval(() => { chip.textContent = `搜索中 · ${Math.floor((performance.now() - started) / 1000)} 秒`; }, 500);
   }, 220);
   try {
-    worker = new Worker(new URL('./worker.js?v=5', import.meta.url), { type: 'module' });
+    worker = new Worker(new URL('./worker.js?v=6', import.meta.url), { type: 'module' });
     worker.onmessage = ({ data }) => {
       if (run !== runId) return;
       stopWorker();
@@ -423,10 +424,13 @@ function buildScenarios() {
     scenarioKind = null;
     scenarios = [];
   }
+  // A swap drops one of the user's own pieces, so it is only ever shown when they pick it:
+  // by default the board shows everything they chose.
+  if (scenarioKind === 'swap') active = -1;
 }
 
 function currentPlacements() {
-  return scenarios.length ? scenarios[active].placements : result?.placements || [];
+  return scenarios.length && active >= 0 ? scenarios[active].placements : result?.placements || [];
 }
 
 /* ---------- rendering ---------- */
@@ -474,13 +478,13 @@ function renderOptions() {
   const kind = scenarioKind;
   const fill = result.fill;
   $('#options-title').textContent = kind === 'fill' ? (fill.exact ? '补上这些，刚好铺满' : '最多还能补上这些')
-    : kind === 'swap' ? '换一块就能铺满'
+    : kind === 'swap' ? '想铺满？可以换一块'
       : (result.minRemoved === 1 ? '拿掉一块就能放下' : `拿掉 ${result.minRemoved} 块就能放下`);
   const listedAll = kind === 'fill' ? fill.exhaustive && fill.found <= scenarios.length : kind === 'remove' && result.alternativesComplete;
   $('#options-count').textContent = `${listedAll ? '共' : '列出'} ${scenarios.length} 种`;
   $('#options-note').textContent = kind === 'fill'
     ? (listedAll ? '点小棋盘查看摆法，满意就一键加入清单。' : '补法很多，这里挑了用到形状最少的几种。点小棋盘查看摆法。')
-    : kind === 'swap' ? '现有积木怎么摆都留不出一块完整的空位。拿掉标 − 的那块，补上虚线的积木，就能铺满。'
+    : kind === 'swap' ? '棋盘上现在是你选的全部积木。点小棋盘可以预览：拿掉标 − 的那块、补上标 + 的积木就能铺满；再点一次回到原样。'
       : (scenarios.some((scenario) => scenario.swaps.length) ? '每种拿法都能放下剩下的积木；虚线是换上后可以铺满的那一块。' : '每种拿法都能放下剩下的积木，相同形状不区分是哪一块。');
   const button = kind === 'fill' ? '加入清单' : kind === 'swap' ? '照这样换' : '就拿掉它';
   $('#options-grid').innerHTML = scenarios.slice(0, shown).map((scenario, index) => {
@@ -521,16 +525,16 @@ function renderResult() {
     headline = `最多还能再加 ${fill.extra} 块`;
     subline = `${all} 块全部放下。${fill.proven ? '这组积木怎么摆都铺不满' : '暂时没找到能铺满的补法'}，补上虚线的积木后还剩 ${free - fill.extra * 4} 格。`;
   } else if (fill?.swaps?.length) {
-    headline = '换一块就能铺满';
-    subline = `${all} 块全部放下，但剩下的 ${free} 格怎么摆都凑不成一块积木。右边列出该拿掉哪块，虚线是换上去的积木。`;
+    headline = `${all} 块全部放下`;
+    subline = `还空 ${free} 格，但怎么摆都凑不成一块完整的积木，所以加不进新的。想铺满的话，右边有换一块的方案可以预览。`;
   } else {
     headline = '全部放下，但加不进新的了';
     subline = `还空 ${free} 格，可无论怎么摆，它们都凑不成一块完整的积木。`;
   }
   $('#score').textContent = maxPlaced;
   $('#score-total').textContent = all;
-  $('#headline').textContent = headline;
-  $('#subline').textContent = subline;
+  baseVerdict = { headline, subline };
+  showVerdict();
   const chip = $('#status-chip');
   chip.className = `chip-status ${all === 0 ? '' : complete ? 'ok' : 'warn'}`;
   chip.textContent = all === 0 ? '等待选择' : complete ? '已证明最优' : '未证明最优';
@@ -543,9 +547,24 @@ function renderResult() {
   renderOptions();
 }
 
+/** While a swap is being previewed, say so: the board no longer shows exactly what the user picked. */
+function showVerdict() {
+  const previewing = scenarioKind === 'swap' && active >= 0;
+  $('#headline').textContent = previewing ? '预览：换一块后铺满' : baseVerdict.headline;
+  $('#subline').textContent = previewing
+    ? `拿掉 ${piecesText(scenarios[active].removed)}，补上 ${piecesText(scenarios[active].added)}。这只是预览，你的清单没有变；再点一次小棋盘回到你选的积木。`
+    : baseVerdict.subline;
+  $('#stage').classList.toggle('previewing', previewing);
+}
+
 function selectScenario(index) {
-  if (index === active || !scenarios[index]) return;
+  if (!scenarios[index]) return;
+  if (index === active) {
+    if (scenarioKind !== 'swap') return;
+    index = -1; // clicking the previewed swap again goes back to the user's own pieces
+  }
   active = index;
+  showVerdict();
   renderBoard();
   document.querySelectorAll('.option').forEach((card) => {
     const on = Number(card.dataset.option) === active;
@@ -599,7 +618,7 @@ function exportBoard() {
     const family = SHAPE_MAP[piece.shapeId].family;
     return `<rect x="${x}" y="${y - 14}" width="19" height="19" rx="5" fill="${FAMILY_COLORS[family]}" ${piece.added ? 'fill-opacity=".2"' : ''}/><text x="${x + 9.5}" y="${y}" text-anchor="middle" font-size="12" font-weight="700" fill="${piece.added ? FAMILY_COLORS[family] : FAMILY_INK[family]}">${piece.label}</text><text x="${x + 26}" y="${y}" font-size="12" fill="#55555c">${SHAPE_MAP[piece.shapeId].name}</text>`;
   }).join('');
-  const context = scenarioKind === 'fill' ? `建议补上：${piecesText(scenarios[active].added)}`
+  const context = active < 0 ? '固定方向 · 只平移 · 不旋转 · 不重叠' : scenarioKind === 'fill' ? `建议补上：${piecesText(scenarios[active].added)}`
     : scenarioKind === 'swap' ? `拿掉：${piecesText(scenarios[active].removed)}　补上：${piecesText(scenarios[active].added)}`
       : scenarioKind === 'remove' ? `拿掉：${piecesText(scenarios[active].removed)}` : '固定方向 · 只平移 · 不旋转 · 不重叠';
   const height = 560 + Math.ceil(pieces.length / 3) * 28;
@@ -607,7 +626,7 @@ function exportBoard() {
   const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `积木摆法-${own.length}块${scenarios.length ? `-方案${active + 1}` : ''}.svg`;
+  link.download = `积木摆法-${own.length}块${scenarios.length && active >= 0 ? `-方案${active + 1}` : ''}.svg`;
   document.body.append(link);
   link.click();
   link.remove();

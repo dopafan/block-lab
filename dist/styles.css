@@ -166,19 +166,11 @@ button:disabled { cursor: default; }
 .count.bump { animation: bump .32s var(--spring); }
 .card.flash { animation: flash .8s var(--ease); }
 
-.draw-card { align-items: center; justify-content: center; gap: 4px; padding: 6px 4px; border-style: dashed; border-color: var(--line-strong); background: var(--surface-2); }
-.draw-title { font-size: 12px; font-weight: 650; line-height: 1.3; }
-.draw-pad {
-  --dc: clamp(11px, 2.2vh, 24px);
-  display: grid; grid-template-columns: repeat(4, var(--dc)); grid-auto-rows: var(--dc); gap: 3px;
-  touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair;
-}
-.draw-cell { border-radius: 4px; background: var(--slot); cursor: crosshair; transition: background .16s var(--ease), transform .2s var(--spring); }
-.draw-cell:hover { background: var(--line-strong); }
-.draw-cell.on { background: var(--c, var(--ink)); transform: scale(1.08); }
-.draw-hint { font-size: 11px; line-height: 1.3; color: var(--ink-3); white-space: nowrap; }
-.draw-hint.ok { color: var(--ok); font-weight: 600; }
-.draw-hint.bad { color: var(--warn); }
+.hint-card { align-items: center; justify-content: center; gap: 3px; padding: 6px; text-align: center; border-style: dashed; border-color: var(--line-strong); background: var(--surface-2); color: var(--ink-2); }
+.hint-card:hover { border-color: var(--line-strong); }
+.hint-card svg { width: 22px; height: 22px; color: var(--ink-3); }
+.hint-card b { font-size: 12px; color: var(--ink); }
+.hint-card span { font-size: 11px; line-height: 1.35; color: var(--ink-3); }
 
 /* ---------- tiles: one size system for thumbnails and boards ---------- */
 
@@ -221,7 +213,23 @@ button:disabled { cursor: default; }
 .slot { margin: 3px; border-radius: 9px; background: var(--slot); }
 .board .tile { font-size: 17px; font-size: 4.6cqw; font-weight: 700; transition: opacity .2s var(--ease), filter .2s var(--ease); cursor: pointer; }
 .board.mini .tile { cursor: inherit; }
-.board-tip { margin-top: 10px; font-size: 12px; color: var(--ink-3); text-align: center; }
+.board-tip { margin-top: 10px; min-height: 18px; font-size: 12px; color: var(--ink-3); text-align: center; transition: color .2s var(--ease); }
+.board-tip.active { color: var(--ink); font-weight: 600; }
+.board-tip.ok { color: var(--ok); font-weight: 600; }
+.board-tip.bad { color: var(--warn); font-weight: 600; }
+
+/* Hand drawing on the board */
+#board { touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+#board .slot { transition: background .15s var(--ease); }
+#board .slot:hover { background: var(--line-strong); }
+#board.drawing .tile:not(.ink) { cursor: crosshair; }
+.tile.under { opacity: .3; filter: saturate(.5); }
+.tile.ink { z-index: 2; pointer-events: none; animation: ink-in .22s var(--spring) both; box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.tile.ink:not([data-family]) { --c: var(--ink-2); }
+.tile.ink.commit { animation: ink-commit .5s var(--ease) both; }
+.tile.ink.bad { --c: var(--c-z); animation: shake .5s var(--ease) both; }
+.board.animate .tile.fresh { animation: drop .5s var(--spring) both, glow 1.8s ease-in-out .55s; animation-delay: calc(var(--i) * 45ms), calc(var(--i) * 45ms + .5s); }
+.tile.fresh { animation: glow 1.8s ease-in-out; }
 .board.animate .tile { animation: drop .5s var(--spring) both; animation-delay: calc(var(--i) * 45ms); }
 .board.animate .tile.ghost { animation-name: drop-ghost; animation-delay: calc(var(--i) * 45ms + 120ms); }
 .dim { opacity: .22; }
@@ -229,7 +237,8 @@ button:disabled { cursor: default; }
 
 .board.mini { --gap: 1px; --rad: 4px; padding: 5px; border-radius: 12px; }
 .board.mini .slot { margin: 1px; border-radius: 3px; }
-.board.mini .tile.ghost { --bw: 1.5px; }
+/* Small previews: dashed outlines turn to noise at this size, so suggested pieces are a soft fill. */
+.board.mini .tile.ghost { --bw: 0px; background: color-mix(in srgb, var(--c) 36%, var(--board)); }
 
 /* ---------- stage ---------- */
 
@@ -324,6 +333,10 @@ dialog::backdrop { background: rgba(10, 10, 12, .45); backdrop-filter: blur(4px)
 
 @keyframes drop { from { opacity: 0; transform: translateY(-14px) scale(.94); } to { opacity: 1; transform: none; } }
 @keyframes drop-ghost { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: none; } }
+@keyframes ink-in { from { opacity: 0; transform: scale(.5); } to { opacity: 1; transform: none; } }
+@keyframes ink-commit { 0% { transform: none; opacity: 1; } 35% { transform: scale(1.08); opacity: 1; } 100% { transform: scale(.92); opacity: 0; } }
+@keyframes shake { 0%, 100% { transform: none; } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
+@keyframes glow { 0%, 100% { filter: none; } 20%, 60% { filter: brightness(1.35) saturate(1.2); } 40%, 80% { filter: brightness(1); } }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.45); } 100% { transform: scale(1); } }
 @keyframes flash { 0%, 100% { box-shadow: 0 0 0 1px var(--c) inset; } 30% { box-shadow: 0 0 0 1px var(--c) inset, 0 0 0 6px color-mix(in srgb, var(--c) 30%, transparent); } }

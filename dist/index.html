@@ -8,8 +8,8 @@
   <meta name="description" content="在 6×6 棋盘里摆固定方向的四格积木：算出最多能放几块，放不下时告诉你拿掉哪块，有空位时告诉你补上哪块能铺满。">
   <title>积木实验室 · 6×6 最优摆放</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%2318181b'/%3E%3Crect x='9' y='9' width='10' height='10' rx='3' fill='%23f0695a'/%3E%3Crect x='21' y='9' width='10' height='10' rx='3' fill='%23f4b740'/%3E%3Crect x='9' y='21' width='10' height='10' rx='3' fill='%2322b3a4'/%3E%3Crect x='21' y='21' width='10' height='10' rx='3' fill='%233f8cf0'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=4">
-  <script type="module" src="app.js?v=4"></script>
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script type="module" src="app.js?v=5"></script>
 </head>
 <body>
   <header class="top">
@@ -56,7 +56,7 @@
       </div>
 
       <div class="board-wrap"><div id="board" class="board" role="group" aria-label="6 乘 6 积木棋盘"></div></div>
-      <p class="board-tip">点棋盘上的积木可以直接拿掉，点虚线积木可以加入。</p>
+      <p id="board-tip" class="board-tip" role="status" aria-live="polite"></p>
       <div id="legend" class="legend"></div>
       <p id="meta" class="meta"></p>
     </section>
@@ -86,7 +86,7 @@
     <div class="dialog-body">
     <div class="dialog-head"><h2>怎么玩</h2><button class="icon-button" type="button" data-close aria-label="关闭">×</button></div>
     <ol class="help-steps">
-      <li><b>选积木。</b>19 种固定方向全部列出，点小图加一块，用 − / + 调数量。也可以在左上角的画板上拖动画出 4 个相连的格子，松手后自动识别并加入。</li>
+      <li><b>选积木。</b>19 种固定方向全部列出，点小图加一块，用 − / + 调数量。也可以直接在棋盘上按住拖动画出 4 个相连的格子，松手后自动识别并加入；画在已有积木上也没关系，所有积木会重新摆放。</li>
       <li><b>看摆法。</b>每块只能平移，不能旋转、翻转、重叠或越界。改动后会自动重新计算。点棋盘上的积木可以直接拿掉。</li>
       <li><b>放不下时</b>，会告诉你最多能放几块、最少要拿掉哪些，以及换成哪一块可以铺满。</li>
       <li><b>有空位时</b>，会用虚线画出建议补上的积木，告诉你加什么可以把 36 格填满。</li>
